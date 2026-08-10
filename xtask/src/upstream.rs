@@ -1,11 +1,49 @@
 use anyhow::{Context, ensure};
 use serde::Deserialize;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path};
 
 const PINNED_COMMIT: &str = "8cabf5a6cf103cebe338d46346e43e3201e64f41";
+const VALID_REQUIREMENTS: &[&str] = &[
+    "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15",
+    "R16", "R17", "R18", "R19", "R20", "R21", "R22",
+];
+
+// This table is deliberately compiled into the verifier instead of being read from SOURCE.toml.
+// It is the offline trust root that makes coordinated snapshot + manifest substitution detectable.
+const PINNED_SOURCE_DIGESTS: &[(&str, &str)] = &[
+    (
+        "codex-rs/core/src/unified_exec/head_tail_buffer.rs",
+        "24053729f07a437c87dd2277e9f0e993e4891077f11795ba52d8c39de7b56ca6",
+    ),
+    (
+        "codex-rs/core/src/unified_exec/head_tail_buffer_tests.rs",
+        "897003527a036f40970ef782f8369e8d5ce882abd6be508b3e7557ead1cfa48b",
+    ),
+    (
+        "codex-rs/apply-patch/src/seek_sequence.rs",
+        "5eced89191977d6b53b1b770ccaad6cafa2fb3ecbcd4839a88318f75e4a620e4",
+    ),
+    (
+        "codex-rs/apply-patch/src/streaming_parser.rs",
+        "5f4b8e60fd24ada7c1b6a696155de3da2b946f7b5436da90e377c9de04b1e578",
+    ),
+    (
+        "codex-rs/skills/src/parser.rs",
+        "f3532df1cc16f4da423b8e5c813269940c90317bcd211b6659cad449fd877e89",
+    ),
+    (
+        "codex-rs/skills/src/parser_tests.rs",
+        "89bf58eb2bd97c47bcefcdc605914bc5b3b023e30a8504fa93e2040ae1913b57",
+    ),
+    (
+        "normalized-contracts/tool-contracts-v1",
+        "cb2253251f7ac4ec02263f7050118d500b4c8603a07e9b871f64ca963df508bf",
+    ),
+];
 
 #[derive(Debug, Deserialize)]
 struct SourceManifest {
@@ -41,17 +79,42 @@ struct SourceFile {
     local_sha256: String,
     license: String,
     requirements: Vec<String>,
+    #[serde(default)]
+    baseline_path: Option<String>,
+    #[serde(default)]
+    delta_registry_path: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CargoLock {
+    package: Vec<LockedPackage>,
+}
+
+#[derive(Deserialize)]
+struct LockedPackage {
+    name: String,
+    version: String,
 }
 
 pub fn verify() -> anyhow::Result<()> {
     let root = std::env::current_dir().context("resolve repository root")?;
     verify_root(&root)?;
     println!("upstream snapshot: PASS ({PINNED_COMMIT})");
-    println!("license, notice, source map, hashes, closure, and contract fixtures: PASS");
+    println!("license, notice, source map, hashes, closure, contracts, and rmcp pin: PASS");
     Ok(())
 }
 
 pub fn verify_root(root: &Path) -> anyhow::Result<()> {
+    let lock_text = fs::read_to_string(root.join("Cargo.lock")).context("read Cargo.lock")?;
+    let lock: CargoLock = toml::from_str(&lock_text).context("parse Cargo.lock")?;
+    let rmcp_versions = lock
+        .package
+        .iter()
+        .filter(|package| package.name == "rmcp")
+        .map(|package| package.version.clone())
+        .collect::<Vec<_>>();
+    verify_rmcp_versions(&rmcp_versions)?;
+
     let manifest_path = root.join("third_party/openai-codex/SOURCE.toml");
     let manifest_text = fs::read_to_string(&manifest_path)
         .with_context(|| format!("read {}", manifest_path.display()))?;
@@ -101,7 +164,7 @@ pub fn verify_root(root: &Path) -> anyhow::Result<()> {
             "boundary {} must be an adapter",
             boundary.symbol
         );
-        verify_requirements(&boundary.requirements, &boundary.symbol)?;
+        verify_requirement_ids(&boundary.requirements, &boundary.symbol)?;
     }
 
     for file in &manifest.files {
@@ -121,10 +184,11 @@ pub fn verify_root(root: &Path) -> anyhow::Result<()> {
             "wrong license for {}",
             file.local_path
         );
-        verify_requirements(&file.requirements, &file.local_path)?;
+        verify_requirement_ids(&file.requirements, &file.local_path)?;
         let bytes = verify_hash(root, &file.local_path, &file.local_sha256)?;
         match file.status.as_str() {
             "unchanged" => {
+                verify_trusted_source_hash(&file.upstream_path, &file.source_sha256)?;
                 ensure!(
                     file.local_sha256 == file.source_sha256,
                     "unchanged file hash differs from source: {}",
@@ -139,11 +203,44 @@ pub fn verify_root(root: &Path) -> anyhow::Result<()> {
                     verify_crate_imports(source, &boundary_symbols, &file.local_path)?;
                 }
             }
-            "adapted" => ensure!(
-                file.local_sha256 != file.source_sha256,
-                "adapted fixture must differ from upstream: {}",
-                file.local_path
-            ),
+            "adapted" => {
+                verify_trusted_source_hash(&file.upstream_path, &file.source_sha256)?;
+                let baseline_path = file.baseline_path.as_deref().with_context(|| {
+                    format!("adapted fixture {} lacks baseline_path", file.local_path)
+                })?;
+                let registry_path = file.delta_registry_path.as_deref().with_context(|| {
+                    format!(
+                        "adapted fixture {} lacks delta_registry_path",
+                        file.local_path
+                    )
+                })?;
+                safe_relative(registry_path)?;
+                let baseline: Value =
+                    serde_json::from_slice(&verify_hash(root, baseline_path, &file.source_sha256)?)
+                        .with_context(|| {
+                            format!("parse normalized contract baseline {baseline_path}")
+                        })?;
+                let local: Value = serde_json::from_slice(&bytes)
+                    .with_context(|| format!("parse adapted fixture {}", file.local_path))?;
+                let registry: Value = serde_json::from_slice(&fs::read(root.join(registry_path))?)
+                    .with_context(|| {
+                        format!("parse compatibility delta registry {registry_path}")
+                    })?;
+                ensure!(
+                    registry["baseline"].as_str() == Some(baseline_path),
+                    "delta registry baseline does not match adapted fixture baseline_path"
+                );
+                verify_contract_delta_coverage(&baseline, &local, &registry)?;
+            }
+            "baseline" => {
+                verify_trusted_source_hash(&file.upstream_path, &file.source_sha256)?;
+                ensure!(
+                    file.local_sha256 == file.source_sha256,
+                    "baseline file hash differs from independent source: {}",
+                    file.local_path
+                );
+            }
+            "registry" => {}
             status => anyhow::bail!(
                 "invalid modification status {status} for {}",
                 file.local_path
@@ -163,16 +260,238 @@ pub fn verify_root(root: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn verify_requirements(requirements: &[String], subject: &str) -> anyhow::Result<()> {
+pub fn verify_rmcp_versions(versions: &[String]) -> anyhow::Result<()> {
+    ensure!(
+        versions == ["3.0.1"],
+        "Cargo.lock must contain exactly rmcp 3.0.1; found {versions:?}"
+    );
+    Ok(())
+}
+
+pub fn verify_requirement_ids(requirements: &[String], subject: &str) -> anyhow::Result<()> {
     ensure!(
         !requirements.is_empty(),
         "missing requirement mapping for {subject}"
     );
+    let mut unique = BTreeSet::new();
+    for id in requirements {
+        ensure!(
+            VALID_REQUIREMENTS.contains(&id.as_str()),
+            "invalid requirement mapping {id} for {subject}; expected R1..R22"
+        );
+        ensure!(
+            unique.insert(id),
+            "duplicate requirement mapping {id} for {subject}"
+        );
+    }
+    Ok(())
+}
+
+pub fn verify_trusted_source_hash(upstream_path: &str, manifest_hash: &str) -> anyhow::Result<()> {
+    let expected = PINNED_SOURCE_DIGESTS
+        .iter()
+        .find_map(|(path, digest)| (*path == upstream_path).then_some(*digest))
+        .with_context(|| format!("no independent pinned digest for {upstream_path}"))?;
     ensure!(
-        requirements.iter().all(|id| id.starts_with('R')),
-        "invalid requirement mapping for {subject}"
+        manifest_hash == expected,
+        "SOURCE.toml hash for {upstream_path} disagrees with independent pinned digest"
     );
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct DeltaRegistry {
+    version: u32,
+    baseline: String,
+    deltas: Vec<ContractDelta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ContractDelta {
+    tool: String,
+    json_path: String,
+    kind: String,
+    requirements: Vec<String>,
+    upstream_source: String,
+    reason: String,
+    expected_upstream_sha256: Option<String>,
+    expected_local_sha256: Option<String>,
+}
+
+pub fn verify_contract_delta_coverage(
+    baseline: &Value,
+    local: &Value,
+    registry: &Value,
+) -> anyhow::Result<()> {
+    let registry: DeltaRegistry =
+        serde_json::from_value(registry.clone()).context("decode compatibility delta registry")?;
+    ensure!(registry.version == 1, "unsupported delta registry version");
+    ensure!(
+        !registry.baseline.trim().is_empty(),
+        "delta registry lacks baseline path"
+    );
+
+    let baseline = contracts_by_name(baseline, "baseline")?;
+    let local = contracts_by_name(local, "local")?;
+    let mut differences = BTreeMap::new();
+    for tool in baseline.keys().chain(local.keys()).collect::<BTreeSet<_>>() {
+        match (baseline.get(tool), local.get(tool)) {
+            (Some(upstream), Some(actual)) => {
+                collect_json_differences(upstream, actual, "", &mut differences)?;
+            }
+            (None, Some(_)) => {
+                differences.insert(((*tool).clone(), String::new()), "added".to_string());
+            }
+            (Some(_), None) => {
+                differences.insert(((*tool).clone(), String::new()), "omitted".to_string());
+            }
+            (None, None) => unreachable!(),
+        }
+    }
+
+    let mut declared = BTreeMap::new();
+    for delta in &registry.deltas {
+        verify_requirement_ids(
+            &delta.requirements,
+            &format!("{}{}", delta.tool, delta.json_path),
+        )?;
+        ensure!(
+            !delta.upstream_source.trim().is_empty(),
+            "missing upstream_source for {}{}",
+            delta.tool,
+            delta.json_path
+        );
+        ensure!(
+            !delta.reason.trim().is_empty(),
+            "missing reason for {}{}",
+            delta.tool,
+            delta.json_path
+        );
+        let upstream_value = contract_value_at(&baseline, &delta.tool, &delta.json_path);
+        let local_value = contract_value_at(&local, &delta.tool, &delta.json_path);
+        verify_expected_json_hash(
+            upstream_value,
+            delta.expected_upstream_sha256.as_deref(),
+            &format!("upstream {}{}", delta.tool, delta.json_path),
+        )?;
+        verify_expected_json_hash(
+            local_value,
+            delta.expected_local_sha256.as_deref(),
+            &format!("local {}{}", delta.tool, delta.json_path),
+        )?;
+        let key = (delta.tool.clone(), delta.json_path.clone());
+        ensure!(
+            declared.insert(key.clone(), delta.kind.clone()).is_none(),
+            "duplicate contract delta {}{}",
+            key.0,
+            key.1
+        );
+    }
+    ensure!(
+        differences == declared,
+        "unregistered contract difference or stale delta: actual={differences:?}, declared={declared:?}"
+    );
+    Ok(())
+}
+
+fn contract_value_at<'a>(
+    contracts: &'a BTreeMap<String, Value>,
+    tool: &str,
+    json_path: &str,
+) -> Option<&'a Value> {
+    let contract = contracts.get(tool)?;
+    if json_path.is_empty() {
+        Some(contract)
+    } else {
+        contract.pointer(json_path)
+    }
+}
+
+fn verify_expected_json_hash(
+    value: Option<&Value>,
+    expected: Option<&str>,
+    subject: &str,
+) -> anyhow::Result<()> {
+    match (value, expected) {
+        (None, None) => Ok(()),
+        (Some(value), Some(expected)) => {
+            let canonical = serde_json::to_vec(value).context("serialize contract delta value")?;
+            verify_bytes_hash(&canonical, expected, subject)
+        }
+        (None, Some(_)) => anyhow::bail!("unexpected expected hash for absent {subject}"),
+        (Some(_), None) => anyhow::bail!("missing expected hash for present {subject}"),
+    }
+}
+
+fn contracts_by_name(value: &Value, subject: &str) -> anyhow::Result<BTreeMap<String, Value>> {
+    let contracts = value
+        .as_array()
+        .with_context(|| format!("{subject} contracts must be an array"))?;
+    let mut by_name = BTreeMap::new();
+    for contract in contracts {
+        let name = contract["name"]
+            .as_str()
+            .with_context(|| format!("{subject} contract lacks name"))?;
+        ensure!(
+            by_name.insert(name.to_string(), contract.clone()).is_none(),
+            "duplicate {subject} contract {name}"
+        );
+    }
+    Ok(by_name)
+}
+
+fn collect_json_differences(
+    baseline: &Value,
+    local: &Value,
+    path: &str,
+    differences: &mut BTreeMap<(String, String), String>,
+) -> anyhow::Result<()> {
+    let tool = baseline["name"]
+        .as_str()
+        .or_else(|| local["name"].as_str())
+        .unwrap_or_default()
+        .to_string();
+    collect_json_differences_for_tool(baseline, local, path, &tool, differences)
+}
+
+fn collect_json_differences_for_tool(
+    baseline: &Value,
+    local: &Value,
+    path: &str,
+    tool: &str,
+    differences: &mut BTreeMap<(String, String), String>,
+) -> anyhow::Result<()> {
+    if baseline == local {
+        return Ok(());
+    }
+    if let (Some(upstream), Some(actual)) = (baseline.as_object(), local.as_object()) {
+        for key in upstream
+            .keys()
+            .chain(actual.keys())
+            .collect::<BTreeSet<_>>()
+        {
+            let next = format!("{path}/{}", escape_json_pointer(key));
+            match (upstream.get(key), actual.get(key)) {
+                (Some(left), Some(right)) => {
+                    collect_json_differences_for_tool(left, right, &next, tool, differences)?;
+                }
+                (Some(_), None) => {
+                    differences.insert((tool.to_string(), next), "omitted".to_string());
+                }
+                (None, Some(_)) => {
+                    differences.insert((tool.to_string(), next), "added".to_string());
+                }
+                (None, None) => unreachable!(),
+            }
+        }
+    } else {
+        differences.insert((tool.to_string(), path.to_string()), "changed".to_string());
+    }
+    Ok(())
+}
+
+fn escape_json_pointer(value: &str) -> String {
+    value.replace('~', "~0").replace('/', "~1")
 }
 
 fn verify_hash(root: &Path, relative: &str, expected: &str) -> anyhow::Result<Vec<u8>> {
@@ -249,9 +568,12 @@ pub fn verify_crate_imports(
             })
             .collect::<String>();
         ensure!(
-            allowed_boundaries
-                .iter()
-                .any(|boundary| import.starts_with(*boundary)),
+            allowed_boundaries.iter().any(|boundary| {
+                import == *boundary
+                    || import
+                        .strip_prefix(*boundary)
+                        .is_some_and(|suffix| suffix.starts_with("::"))
+            }),
             "unmapped local import {import} crosses into unchanged snapshot {subject}"
         );
     }

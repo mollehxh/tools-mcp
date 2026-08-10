@@ -24,6 +24,24 @@ local_path = "crates/codex-tools-runtime/src/lib.rs"
 status = "adapter"
 requirements = ["R6", "R7", "R9"]
 
+[[boundaries]]
+symbol = "crate::parser"
+local_path = "crates/codex-tools-runtime/src/apply_patch_parser_boundary.rs"
+status = "adapter"
+requirements = ["R6", "R7", "R9"]
+
+[[boundaries]]
+symbol = "crate::contracts::ExecCommandInput"
+local_path = "crates/codex-tools-runtime/src/contracts/mod.rs"
+status = "adapter"
+requirements = ["R3", "R7", "R9"]
+
+[[boundaries]]
+symbol = "crate::contracts"
+local_path = "crates/skill-store/src/contracts.rs"
+status = "adapter"
+requirements = ["R7", "R9", "R16", "R17"]
+
 [[files]]
 local_path = "crates/codex-tools-runtime/src/upstream/unified_exec/head_tail_buffer.rs"
 upstream_path = "codex-rs/core/src/unified_exec/head_tail_buffer.rs"
@@ -55,6 +73,16 @@ license = "Apache-2.0"
 requirements = ["R6", "R7", "R8", "R9"]
 
 [[files]]
+local_path = "crates/codex-tools-runtime/src/upstream/apply_patch/streaming_parser.rs"
+upstream_path = "codex-rs/apply-patch/src/streaming_parser.rs"
+module = "crate::upstream_streaming_patch_parser"
+status = "unchanged"
+source_sha256 = "5f4b8e60fd24ada7c1b6a696155de3da2b946f7b5436da90e377c9de04b1e578"
+local_sha256 = "5f4b8e60fd24ada7c1b6a696155de3da2b946f7b5436da90e377c9de04b1e578"
+license = "Apache-2.0"
+requirements = ["R6", "R7", "R8", "R9"]
+
+[[files]]
 local_path = "crates/skill-store/src/upstream/parser.rs"
 upstream_path = "codex-rs/skills/src/parser.rs"
 module = "crate::upstream"
@@ -75,22 +103,33 @@ license = "Apache-2.0"
 requirements = ["R7", "R8", "R9"]
 
 [[files]]
-local_path = "tests/conformance/fixtures/tool-contracts.json"
-upstream_path = "codex-rs/core/src/tools/handlers/shell_spec.rs"
-module = "fixture::tool_contracts"
-status = "adapted"
-source_sha256 = "39e2d837cc76a1a2822363eb0932a8b1e2ac1188ee0fb38df9d57958e0b85320"
-local_sha256 = "c16a7d3dfd8a53886ad2ae3cec66db217b083bb3a7b3a428eb4046a056348f50"
-license = "Apache-2.0"
-requirements = ["R2", "R3", "R7", "R8", "R9"]
-
-[[files]]
-local_path = "tests/conformance/fixtures/compatibility-deltas.json"
-upstream_path = "codex-rs/core/src/tools/handlers/apply_patch_spec.rs"
-module = "fixture::compatibility_deltas"
-status = "adapted"
-source_sha256 = "91b4e8669c54e00f16470eb0677b0002a180c10ca6dfe0607b93240426fa9eef"
-local_sha256 = "bd2667b5a441099972ddb47361bae6367b1bacc61a726c2ad23ba0ec6be463db"
+local_path = "tests/conformance/fixtures/pinned-upstream-tool-contracts.json"
+upstream_path = "normalized-contracts/tool-contracts-v1"
+module = "fixture::pinned_upstream_tool_contracts"
+status = "baseline"
+source_sha256 = "cb2253251f7ac4ec02263f7050118d500b4c8603a07e9b871f64ca963df508bf"
+local_sha256 = "cb2253251f7ac4ec02263f7050118d500b4c8603a07e9b871f64ca963df508bf"
 license = "Apache-2.0"
 requirements = ["R2", "R3", "R6", "R7", "R8", "R9"]
 
+[[files]]
+local_path = "tests/conformance/fixtures/tool-contracts.json"
+upstream_path = "normalized-contracts/tool-contracts-v1"
+module = "fixture::tool_contracts"
+status = "adapted"
+source_sha256 = "cb2253251f7ac4ec02263f7050118d500b4c8603a07e9b871f64ca963df508bf"
+local_sha256 = "7ce0adac8d5514e5229da635d3ece4513adf65f56bb55a7f4005832df986a1d6"
+license = "Apache-2.0"
+requirements = ["R2", "R3", "R6", "R7", "R8", "R9"]
+baseline_path = "tests/conformance/fixtures/pinned-upstream-tool-contracts.json"
+delta_registry_path = "tests/conformance/fixtures/compatibility-deltas.json"
+
+[[files]]
+local_path = "tests/conformance/fixtures/compatibility-deltas.json"
+upstream_path = "normalized-contracts/tool-contract-deltas-v1"
+module = "fixture::compatibility_deltas"
+status = "registry"
+source_sha256 = "c1657fb8611c11d1bd9dc8b948eb35de744f7559342fbfa77815159112030310"
+local_sha256 = "c1657fb8611c11d1bd9dc8b948eb35de744f7559342fbfa77815159112030310"
+license = "Apache-2.0"
+requirements = ["R2", "R3", "R6", "R7", "R8", "R9"]
