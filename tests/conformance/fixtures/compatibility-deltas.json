@@ -1,0 +1,8 @@
+[
+  { "surface": "apply_patch input", "difference": "Freeform text is carried in one MCP object field.", "requirements": ["R6"] },
+  { "surface": "approval-disabled schemas", "difference": "Approval and escalation fields are omitted.", "requirements": ["R3", "R11"] },
+  { "surface": "skill authority", "difference": "Local project/global scope replaces Codex executor/orchestrator authority.", "requirements": ["R15", "R16", "R17"] },
+  { "surface": "skills.install", "difference": "New tool based on OpenAI installer semantics.", "requirements": ["R14", "R18", "R19", "R20"] },
+  { "surface": "MCP results", "difference": "Object structuredContent has equivalent JSON text fallback.", "requirements": ["R2", "R3"] },
+  { "surface": "MCP annotations", "difference": "Truthful hints are frozen as transport metadata.", "requirements": ["R2", "R3", "R11"] }
+]

@@ -1,0 +1,16 @@
+version = 1
+status = "not_run"
+required_before = "U2"
+endpoint_kind = "temporary_ngrok_https"
+client = "ChatGPT developer mode / Scan Tools"
+expected_tools = [
+  "exec_command",
+  "write_stdin",
+  "apply_patch",
+  "skills.install",
+  "skills.list",
+  "skills.read",
+]
+observed_at = ""
+notes = "Manual external checkpoint. Do not change status without recording a real ChatGPT Scan Tools observation."
+

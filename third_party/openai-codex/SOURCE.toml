@@ -1,0 +1,96 @@
+version = 1
+repository = "https://github.com/openai/codex"
+commit = "8cabf5a6cf103cebe338d46346e43e3201e64f41"
+license = "Apache-2.0"
+license_path = "third_party/openai-codex/LICENSE"
+license_sha256 = "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc"
+notice_path = "third_party/openai-codex/NOTICE"
+notice_sha256 = "9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915"
+audited_roots = [
+  "crates/codex-tools-runtime/src/upstream",
+  "crates/skill-store/src/upstream",
+  "tests/conformance/fixtures",
+]
+
+[[boundaries]]
+symbol = "crate::unified_exec"
+local_path = "crates/codex-tools-runtime/src/lib.rs"
+status = "adapter"
+requirements = ["R3", "R7", "R9"]
+
+[[boundaries]]
+symbol = "crate::ApplyPatchFileUpdateMode"
+local_path = "crates/codex-tools-runtime/src/lib.rs"
+status = "adapter"
+requirements = ["R6", "R7", "R9"]
+
+[[files]]
+local_path = "crates/codex-tools-runtime/src/upstream/unified_exec/head_tail_buffer.rs"
+upstream_path = "codex-rs/core/src/unified_exec/head_tail_buffer.rs"
+module = "crate::upstream_head_tail_buffer"
+status = "unchanged"
+source_sha256 = "24053729f07a437c87dd2277e9f0e993e4891077f11795ba52d8c39de7b56ca6"
+local_sha256 = "24053729f07a437c87dd2277e9f0e993e4891077f11795ba52d8c39de7b56ca6"
+license = "Apache-2.0"
+requirements = ["R3", "R7", "R8", "R9"]
+
+[[files]]
+local_path = "crates/codex-tools-runtime/src/upstream/unified_exec/head_tail_buffer_tests.rs"
+upstream_path = "codex-rs/core/src/unified_exec/head_tail_buffer_tests.rs"
+module = "crate::upstream_head_tail_buffer::tests"
+status = "unchanged"
+source_sha256 = "897003527a036f40970ef782f8369e8d5ce882abd6be508b3e7557ead1cfa48b"
+local_sha256 = "897003527a036f40970ef782f8369e8d5ce882abd6be508b3e7557ead1cfa48b"
+license = "Apache-2.0"
+requirements = ["R3", "R7", "R8", "R9"]
+
+[[files]]
+local_path = "crates/codex-tools-runtime/src/upstream/apply_patch/seek_sequence.rs"
+upstream_path = "codex-rs/apply-patch/src/seek_sequence.rs"
+module = "crate::upstream_seek_sequence"
+status = "unchanged"
+source_sha256 = "5eced89191977d6b53b1b770ccaad6cafa2fb3ecbcd4839a88318f75e4a620e4"
+local_sha256 = "5eced89191977d6b53b1b770ccaad6cafa2fb3ecbcd4839a88318f75e4a620e4"
+license = "Apache-2.0"
+requirements = ["R6", "R7", "R8", "R9"]
+
+[[files]]
+local_path = "crates/skill-store/src/upstream/parser.rs"
+upstream_path = "codex-rs/skills/src/parser.rs"
+module = "crate::upstream"
+status = "unchanged"
+source_sha256 = "f3532df1cc16f4da423b8e5c813269940c90317bcd211b6659cad449fd877e89"
+local_sha256 = "f3532df1cc16f4da423b8e5c813269940c90317bcd211b6659cad449fd877e89"
+license = "Apache-2.0"
+requirements = ["R7", "R8", "R9"]
+
+[[files]]
+local_path = "crates/skill-store/src/upstream/parser_tests.rs"
+upstream_path = "codex-rs/skills/src/parser_tests.rs"
+module = "crate::upstream::tests"
+status = "unchanged"
+source_sha256 = "89bf58eb2bd97c47bcefcdc605914bc5b3b023e30a8504fa93e2040ae1913b57"
+local_sha256 = "89bf58eb2bd97c47bcefcdc605914bc5b3b023e30a8504fa93e2040ae1913b57"
+license = "Apache-2.0"
+requirements = ["R7", "R8", "R9"]
+
+[[files]]
+local_path = "tests/conformance/fixtures/tool-contracts.json"
+upstream_path = "codex-rs/core/src/tools/handlers/shell_spec.rs"
+module = "fixture::tool_contracts"
+status = "adapted"
+source_sha256 = "39e2d837cc76a1a2822363eb0932a8b1e2ac1188ee0fb38df9d57958e0b85320"
+local_sha256 = "c16a7d3dfd8a53886ad2ae3cec66db217b083bb3a7b3a428eb4046a056348f50"
+license = "Apache-2.0"
+requirements = ["R2", "R3", "R7", "R8", "R9"]
+
+[[files]]
+local_path = "tests/conformance/fixtures/compatibility-deltas.json"
+upstream_path = "codex-rs/core/src/tools/handlers/apply_patch_spec.rs"
+module = "fixture::compatibility_deltas"
+status = "adapted"
+source_sha256 = "91b4e8669c54e00f16470eb0677b0002a180c10ca6dfe0607b93240426fa9eef"
+local_sha256 = "bd2667b5a441099972ddb47361bae6367b1bacc61a726c2ad23ba0ec6be463db"
+license = "Apache-2.0"
+requirements = ["R2", "R3", "R6", "R7", "R8", "R9"]
+
