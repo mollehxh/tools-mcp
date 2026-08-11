@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/mcp-agent-authority",
     "crates/codex-tools-runtime",
     "crates/skill-store",
     "crates/mcp-agent-server",
@@ -15,6 +16,9 @@ rust-version = "1.95"
 [workspace.dependencies]
 anyhow = "1.0.100"
 axum = "0.8.6"
+cap-std = "4.0.2"
+cap-primitives = "4.0.2"
+libc = "0.2.177"
 pretty_assertions = "1.4.1"
 rmcp = { version = "=3.0.1", features = ["client", "reqwest", "transport-streamable-http-client-reqwest", "transport-streamable-http-server"] }
 serde = { version = "1.0.228", features = ["derive"] }
