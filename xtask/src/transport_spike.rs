@@ -10,6 +10,7 @@ use rmcp::transport::{
 };
 use rmcp::{ClientLifecycleMode, ClientServiceExt};
 use serde::Deserialize;
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
@@ -39,6 +40,13 @@ struct InspectorTool {
     output_schema: serde_json::Value,
 }
 
+#[derive(Deserialize)]
+struct ChatGptCheckpoint {
+    status: String,
+    expected_tools: Vec<String>,
+    observed_at: String,
+}
+
 pub fn run() -> anyhow::Result<()> {
     tokio::runtime::Runtime::new()?.block_on(async {
         let (loopback, inspector) =
@@ -48,13 +56,102 @@ pub fn run() -> anyhow::Result<()> {
         println!("loopback stateless discovery: {stateless} tools");
         println!("loopback legacy initialize: {legacy} tools");
         println!("MCP Inspector {INSPECTOR_PACKAGE} tools/list: {inspector} tools");
-        println!("ChatGPT/ngrok checkpoint: NOT RUN (manual external-client checkpoint)");
+        let chatgpt = verify_chatgpt_checkpoint()?;
+        println!("ChatGPT/ngrok checkpoint: PASS ({chatgpt} tools)");
         anyhow::ensure!(
             stateless == 6 && legacy == 6 && inspector == 6,
             "stub surface must contain six tools"
         );
         Ok(())
     })
+}
+
+pub fn verify_chatgpt_checkpoint() -> anyhow::Result<usize> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../tests/e2e/chatgpt-scan-tools-checkpoint.toml");
+    let contents = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let checkpoint: ChatGptCheckpoint =
+        toml::from_str(&contents).with_context(|| format!("failed to parse {}", path.display()))?;
+
+    anyhow::ensure!(
+        checkpoint.status == "passed",
+        "ChatGPT/ngrok checkpoint has not passed"
+    );
+    anyhow::ensure!(
+        !checkpoint.observed_at.trim().is_empty(),
+        "ChatGPT/ngrok checkpoint is missing observed_at"
+    );
+    anyhow::ensure!(
+        checkpoint
+            .expected_tools
+            .iter()
+            .map(String::as_str)
+            .eq(EXPECTED_TOOLS),
+        "ChatGPT/ngrok checkpoint tool surface does not match the frozen contract"
+    );
+
+    Ok(checkpoint.expected_tools.len())
+}
+
+pub fn serve(bind: &str, public_host: Option<&str>) -> anyhow::Result<()> {
+    tokio::runtime::Runtime::new()?.block_on(async {
+        let listener = tokio::net::TcpListener::bind(bind)
+            .await
+            .with_context(|| format!("failed to bind U1 stub at {bind}"))?;
+        let address = listener.local_addr()?;
+        let cancellation = CancellationToken::new();
+        let allowed_hosts = public_host.map_or_else(
+            || {
+                vec![
+                    "localhost".to_owned(),
+                    "127.0.0.1".to_owned(),
+                    "::1".to_owned(),
+                ]
+            },
+            |host| {
+                vec![
+                    "localhost".to_owned(),
+                    "127.0.0.1".to_owned(),
+                    "::1".to_owned(),
+                    host.to_owned(),
+                ]
+            },
+        );
+        let server = tokio::spawn(serve_stub(listener, cancellation.clone(), allowed_hosts));
+
+        println!("U1 contract-only stub listening at http://{address}/mcp");
+        if let Some(public_host) = public_host {
+            println!("Allowed public Host: {public_host}");
+        }
+        println!("Tool execution is intentionally unavailable; press Ctrl-C to stop.");
+
+        tokio::signal::ctrl_c()
+            .await
+            .context("failed to listen for Ctrl-C")?;
+        cancellation.cancel();
+        server.await.context("U1 stub server task failed")??;
+        Ok(())
+    })
+}
+
+pub async fn serve_stub(
+    listener: tokio::net::TcpListener,
+    cancellation: CancellationToken,
+    allowed_hosts: Vec<String>,
+) -> anyhow::Result<()> {
+    let config = StreamableHttpServerConfig::default()
+        .with_json_response(true)
+        .with_legacy_session_mode(false)
+        .with_allowed_hosts(allowed_hosts)
+        .with_cancellation_token(cancellation.child_token());
+    let service: StreamableHttpService<StubServer, LocalSessionManager> =
+        StreamableHttpService::new(|| Ok(StubServer), std::sync::Arc::default(), config);
+    let router = axum::Router::new().nest_service("/mcp", service);
+    axum::serve(listener, router)
+        .with_graceful_shutdown(async move { cancellation.cancelled_owned().await })
+        .await
+        .context("U1 stub server failed")
 }
 
 pub async fn probe_loopback_transports() -> anyhow::Result<(usize, usize)> {

@@ -1,5 +1,5 @@
 version = 1
-status = "not_run"
+status = "passed"
 required_before = "U2"
 endpoint_kind = "temporary_ngrok_https"
 client = "ChatGPT developer mode / Scan Tools"
@@ -11,6 +11,5 @@ expected_tools = [
   "skills.list",
   "skills.read",
 ]
-observed_at = ""
-notes = "Manual external checkpoint. Do not change status without recording a real ChatGPT Scan Tools observation."
-
+observed_at = "2026-08-11T12:56:16+05:00"
+notes = "ChatGPT Developer Mode connected to the temporary ngrok HTTPS endpoint and displayed all six expected tools with their schemas. App status: development; version name: dev mode."
