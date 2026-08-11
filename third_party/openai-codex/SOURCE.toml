@@ -32,9 +32,27 @@ requirements = ["R6", "R7", "R9"]
 
 [[boundaries]]
 symbol = "crate::contracts::ExecCommandInput"
-local_path = "crates/codex-tools-runtime/src/contracts/mod.rs"
+local_path = "crates/codex-tools-runtime/src/contracts/exec_command.rs"
 status = "adapter"
 requirements = ["R3", "R7", "R9"]
+
+[[boundaries]]
+symbol = "crate::contracts::WriteStdinInput"
+local_path = "crates/codex-tools-runtime/src/contracts/write_stdin.rs"
+status = "adapter"
+requirements = ["R3", "R5", "R7", "R9"]
+
+[[boundaries]]
+symbol = "crate::process::ProcessManager"
+local_path = "crates/codex-tools-runtime/src/process/manager.rs"
+status = "adapter"
+requirements = ["R4", "R5", "R9", "R10", "R11", "R12", "R13"]
+
+[[boundaries]]
+symbol = "crate::process::PendingResult"
+local_path = "crates/codex-tools-runtime/src/process/manager.rs"
+status = "adapter"
+requirements = ["R4", "R5", "R13"]
 
 [[boundaries]]
 symbol = "crate::contracts"

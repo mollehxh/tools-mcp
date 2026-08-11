@@ -1,5 +1,6 @@
 pub mod contracts;
 pub mod extraction;
+pub mod process;
 
 #[path = "apply_patch_parser_boundary.rs"]
 mod parser;

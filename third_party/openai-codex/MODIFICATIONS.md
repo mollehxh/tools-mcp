@@ -10,7 +10,11 @@ the upstream subtrees. The frozen MCP fixtures intentionally adapt the pinned co
 - skill authority is expressed as local `project`/`global` scope (R15-R17).
 - `skills.install` is a new contract based on installer semantics (R14, R18-R20).
 - MCP structured results and truthful annotations are transport adaptations (R2-R3, R11).
+- unified exec is extracted behind an owner-scoped, transport-neutral registry; live slots are
+  never evicted, transport handoff controls publication/consumption, and one five-minute terminal
+  tombstone replaces the upstream session-owned store (R4-R5, R13).
+- command spawn is routed through the shared verified workspace-write sandbox instead of Codex
+  approval, hook, telemetry, and agent-session orchestration (R10-R12).
 
 The complete machine-readable delta registry is
 `tests/conformance/fixtures/compatibility-deltas.json`.
-

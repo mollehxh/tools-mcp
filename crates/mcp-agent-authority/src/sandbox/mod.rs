@@ -280,25 +280,24 @@ impl VerifiedSandbox {
 }
 
 impl SandboxCommand {
+    /// Revalidates the packaged sandbox and returns the fixed native launch
+    /// command. Runtime adapters may configure stdio or attach a PTY, but may
+    /// not replace the program, arguments, or working-directory authority.
+    pub fn into_std_command(self) -> Result<Command, SandboxError> {
+        self.sandbox
+            .build_command(&self.program, &self.args, &self.cwd)
+    }
+
     pub fn spawn(self) -> Result<Child, SandboxError> {
-        Ok(self
-            .sandbox
-            .build_command(&self.program, &self.args, &self.cwd)?
-            .spawn()?)
+        Ok(self.into_std_command()?.spawn()?)
     }
 
     pub fn output(self) -> Result<Output, SandboxError> {
-        Ok(self
-            .sandbox
-            .build_command(&self.program, &self.args, &self.cwd)?
-            .output()?)
+        Ok(self.into_std_command()?.output()?)
     }
 
     pub fn status(self) -> Result<ExitStatus, SandboxError> {
-        Ok(self
-            .sandbox
-            .build_command(&self.program, &self.args, &self.cwd)?
-            .status()?)
+        Ok(self.into_std_command()?.status()?)
     }
 }
 

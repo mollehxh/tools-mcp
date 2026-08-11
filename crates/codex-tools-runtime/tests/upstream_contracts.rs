@@ -3,6 +3,11 @@ use codex_tools_runtime::contracts::{ExecCommandInput, ExecCommandOutput, Unifie
 use codex_tools_runtime::extraction::{ApplyPatchInput, ApplyPatchOperation, parse_apply_patch};
 use std::time::Duration;
 
+#[path = "../../../tests/conformance/exec_command.rs"]
+mod exec_command_conformance;
+#[path = "../../../tests/conformance/write_stdin.rs"]
+mod write_stdin_conformance;
+
 #[test]
 fn exactly_six_frozen_contracts_are_exposed() {
     let contracts = frozen_tool_contracts();
