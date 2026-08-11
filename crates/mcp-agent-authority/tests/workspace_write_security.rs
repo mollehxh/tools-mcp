@@ -1,5 +1,6 @@
 use mcp_agent_authority::{
-    AuthorityError, ManagedWriteScope, ServerOperations, WorkspaceAuthority,
+    AuthorityError, ManagedWriteScope, OperationError, ServerOperations, WorkspaceAuthority,
+    WorkspaceOperations,
 };
 use std::fs;
 use std::path::Path;
@@ -164,14 +165,55 @@ fn managed_writes_allow_project_skills_but_protect_authority_roots() {
 
     for protected in [
         ".git/config",
+        ".GIT/config",
         ".codex/state.json",
+        ".CoDeX/state.json",
         ".mcp-agent/state",
+        ".MCP-AGENT/state",
         ".mcp-agent/staging/install",
     ] {
         assert!(matches!(
             command.authorize_write(Path::new(protected)),
             Err(AuthorityError::ProtectedRoot)
         ));
+    }
+
+    let operations = WorkspaceOperations::new(&authority).unwrap();
+    assert!(matches!(
+        operations.atomic_write(Path::new(".GIT/config"), b"denied"),
+        Err(OperationError::ProtectedRoot)
+    ));
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_protected_root_aliases_are_rejected() {
+    let fixture = conformance::Fixture::new();
+    let authority = fixture.authority();
+
+    for protected in [".git./config", ".CODEX /state.json", ".mcp-agent.../state"] {
+        assert!(matches!(
+            authority.command().authorize_write(Path::new(protected)),
+            Err(AuthorityError::ProtectedRoot)
+        ));
+    }
+}
+
+#[test]
+fn workspace_and_global_skill_roots_must_not_overlap() {
+    let parent = tempfile::tempdir().unwrap();
+    let workspace = parent.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    let parent = parent.path().canonicalize().unwrap();
+
+    for global in [workspace.clone(), workspace.join("global"), parent] {
+        let result = WorkspaceAuthority::with_global_skills(&workspace, &global);
+        assert!(
+            matches!(result, Err(AuthorityError::OverlappingRoots)),
+            "global root {} returned {result:?}",
+            global.display()
+        );
     }
 }
 
@@ -293,6 +335,55 @@ fn atomic_replacement_does_not_mutate_an_external_hardlink() {
 
     assert_eq!(fs::read(&sentinel).unwrap(), b"unchanged");
     assert_eq!(fs::read(&destination).unwrap(), b"replacement");
+}
+
+#[cfg(unix)]
+#[test]
+fn atomic_replacement_preserves_existing_file_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = conformance::Fixture::new();
+    let authority = fixture.authority();
+    let operations = WorkspaceOperations::new(&authority).unwrap();
+    let destination = fixture.workspace.join("bin/tool.sh");
+    fs::create_dir_all(destination.parent().unwrap()).unwrap();
+    fs::write(&destination, b"old").unwrap();
+    fs::set_permissions(&destination, fs::Permissions::from_mode(0o751)).unwrap();
+
+    operations
+        .atomic_write(Path::new("bin/tool.sh"), b"new")
+        .unwrap();
+
+    assert_eq!(fs::read(&destination).unwrap(), b"new");
+    assert_eq!(
+        fs::metadata(destination).unwrap().permissions().mode() & 0o777,
+        0o751
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn workspace_reads_reject_static_source_symlinks() {
+    let fixture = conformance::Fixture::new();
+    let authority = fixture.authority();
+    let operations = WorkspaceOperations::new(&authority).unwrap();
+    let outside_source = fixture.outside.join("source.txt");
+    let workspace_source = fixture.workspace.join("source.txt");
+    fs::write(&outside_source, b"outside").unwrap();
+    std::os::unix::fs::symlink(&outside_source, &workspace_source).unwrap();
+
+    assert!(operations.read_to_string(Path::new("source.txt")).is_err());
+    assert_eq!(fs::read(outside_source).unwrap(), b"outside");
+}
+
+#[test]
+fn operation_errors_include_the_underlying_io_diagnostic() {
+    let error = OperationError::Io(std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        "diagnostic sentinel",
+    ));
+
+    assert!(error.to_string().contains("diagnostic sentinel"));
 }
 
 #[cfg(unix)]

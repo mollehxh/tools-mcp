@@ -17,48 +17,102 @@ symbol = "crate::unified_exec"
 local_path = "crates/codex-tools-runtime/src/lib.rs"
 status = "adapter"
 requirements = ["R3", "R7", "R9"]
+provenance_exemption = "legacy boundary predates source-level adapter provenance"
 
 [[boundaries]]
 symbol = "crate::ApplyPatchFileUpdateMode"
 local_path = "crates/codex-tools-runtime/src/lib.rs"
 status = "adapter"
 requirements = ["R6", "R7", "R9"]
+provenance_exemption = "legacy boundary predates source-level adapter provenance"
 
 [[boundaries]]
 symbol = "crate::parser"
 local_path = "crates/codex-tools-runtime/src/apply_patch_parser_boundary.rs"
 status = "adapter"
 requirements = ["R6", "R7", "R9"]
+local_sha256 = "11d9a30dfd93c6b19dd21e7b5577fa3b3afcc33bbd2014f594b83426e6967f21"
+
+[[boundaries.sources]]
+upstream_path = "codex-rs/apply-patch/src/parser.rs"
+source_sha256 = "6b8086467d0500f4fc9aa9a35cd33a0bce53c01bcb74b915b9efc6fcf187f7ce"
+license = "Apache-2.0"
+
+[[boundaries]]
+symbol = "crate::patch::ApplyPatchError"
+local_path = "crates/codex-tools-runtime/src/patch/mod.rs"
+status = "adapter"
+requirements = ["R3", "R6", "R7", "R9", "R10"]
+local_sha256 = "40650f629115777bd2d746fc5b58d0e6a5eebcb2b06628b7abf1f934e0981ade"
+
+[[boundaries.sources]]
+upstream_path = "codex-rs/apply-patch/src/lib.rs"
+source_sha256 = "4c07280c6c79ef0ad2e761777a9f2cc7dd120d5455c60294efefbaa90d8a8614"
+license = "Apache-2.0"
+
+[[boundaries]]
+symbol = "crate::patch::adapter"
+local_path = "crates/codex-tools-runtime/src/patch/adapter.rs"
+status = "adapter"
+requirements = ["R3", "R6", "R7", "R9", "R10"]
+local_sha256 = "55fd839688b2eccbc6cfb66d98ffa7793696bbee1ec19ae348dd76e7a102b131"
+
+[[boundaries.sources]]
+upstream_path = "codex-rs/apply-patch/src/lib.rs"
+source_sha256 = "4c07280c6c79ef0ad2e761777a9f2cc7dd120d5455c60294efefbaa90d8a8614"
+license = "Apache-2.0"
+
+[[boundaries.sources]]
+upstream_path = "codex-rs/apply-patch/src/file_update.rs"
+source_sha256 = "67acb3ac257e3dbaef324c048532d521042c3b857f98e7ba61d76d4eae769b05"
+license = "Apache-2.0"
+
+[[boundaries]]
+symbol = "crate::contracts::ApplyPatchInput"
+local_path = "crates/codex-tools-runtime/src/contracts/apply_patch.rs"
+status = "adapter"
+requirements = ["R3", "R6", "R7", "R9"]
+local_sha256 = "b7be9bf8c97ff51b2dd0e790c21a0520191107efbaf40a5e9b6d6a256e2313f4"
+
+[[boundaries.sources]]
+upstream_path = "codex-rs/core/src/tools/handlers/apply_patch_spec.rs"
+source_sha256 = "91b4e8669c54e00f16470eb0677b0002a180c10ca6dfe0607b93240426fa9eef"
+license = "Apache-2.0"
 
 [[boundaries]]
 symbol = "crate::contracts::ExecCommandInput"
 local_path = "crates/codex-tools-runtime/src/contracts/exec_command.rs"
 status = "adapter"
 requirements = ["R3", "R7", "R9"]
+provenance_exemption = "legacy boundary predates source-level adapter provenance"
 
 [[boundaries]]
 symbol = "crate::contracts::WriteStdinInput"
 local_path = "crates/codex-tools-runtime/src/contracts/write_stdin.rs"
 status = "adapter"
 requirements = ["R3", "R5", "R7", "R9"]
+provenance_exemption = "legacy boundary predates source-level adapter provenance"
 
 [[boundaries]]
 symbol = "crate::process::ProcessManager"
 local_path = "crates/codex-tools-runtime/src/process/manager.rs"
 status = "adapter"
 requirements = ["R4", "R5", "R9", "R10", "R11", "R12", "R13"]
+provenance_exemption = "legacy boundary predates source-level adapter provenance"
 
 [[boundaries]]
 symbol = "crate::process::PendingResult"
 local_path = "crates/codex-tools-runtime/src/process/manager.rs"
 status = "adapter"
 requirements = ["R4", "R5", "R13"]
+provenance_exemption = "legacy boundary predates source-level adapter provenance"
 
 [[boundaries]]
 symbol = "crate::contracts"
 local_path = "crates/skill-store/src/contracts.rs"
 status = "adapter"
 requirements = ["R7", "R9", "R16", "R17"]
+provenance_exemption = "legacy boundary predates source-level adapter provenance"
 
 [[files]]
 local_path = "crates/codex-tools-runtime/src/upstream/unified_exec/head_tail_buffer.rs"

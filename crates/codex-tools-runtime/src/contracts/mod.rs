@@ -2,9 +2,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::OnceLock;
 
+mod apply_patch;
 mod exec_command;
 mod write_stdin;
 
+pub use apply_patch::{ApplyPatchInput, ApplyPatchOutput};
 pub use exec_command::{
     ExecCommandInput, ExecCommandOutput, UnifiedExecRequest, UnifiedExecResult,
 };

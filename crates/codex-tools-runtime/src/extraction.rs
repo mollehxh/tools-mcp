@@ -18,11 +18,7 @@ pub fn find_patch_context(lines: &[String], pattern: &[String]) -> Option<usize>
     )
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ApplyPatchInput {
-    pub patch: String,
-}
+pub use crate::contracts::ApplyPatchInput;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParsedApplyPatch {

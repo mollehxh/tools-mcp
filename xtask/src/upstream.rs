@@ -32,6 +32,22 @@ const PINNED_SOURCE_DIGESTS: &[(&str, &str)] = &[
         "5f4b8e60fd24ada7c1b6a696155de3da2b946f7b5436da90e377c9de04b1e578",
     ),
     (
+        "codex-rs/apply-patch/src/parser.rs",
+        "6b8086467d0500f4fc9aa9a35cd33a0bce53c01bcb74b915b9efc6fcf187f7ce",
+    ),
+    (
+        "codex-rs/apply-patch/src/lib.rs",
+        "4c07280c6c79ef0ad2e761777a9f2cc7dd120d5455c60294efefbaa90d8a8614",
+    ),
+    (
+        "codex-rs/apply-patch/src/file_update.rs",
+        "67acb3ac257e3dbaef324c048532d521042c3b857f98e7ba61d76d4eae769b05",
+    ),
+    (
+        "codex-rs/core/src/tools/handlers/apply_patch_spec.rs",
+        "91b4e8669c54e00f16470eb0677b0002a180c10ca6dfe0607b93240426fa9eef",
+    ),
+    (
         "codex-rs/skills/src/parser.rs",
         "f3532df1cc16f4da423b8e5c813269940c90317bcd211b6659cad449fd877e89",
     ),
@@ -42,6 +58,46 @@ const PINNED_SOURCE_DIGESTS: &[(&str, &str)] = &[
     (
         "normalized-contracts/tool-contracts-v1",
         "cb2253251f7ac4ec02263f7050118d500b4c8603a07e9b871f64ca963df508bf",
+    ),
+];
+
+// These exemptions are deliberately compiled into the verifier. A manifest edit cannot turn a
+// newly adapted boundary into an unverified legacy boundary by inventing an exemption rationale.
+const PINNED_BOUNDARY_PROVENANCE_EXEMPTIONS: &[(&str, &str, &str)] = &[
+    (
+        "crate::unified_exec",
+        "crates/codex-tools-runtime/src/lib.rs",
+        "legacy boundary predates source-level adapter provenance",
+    ),
+    (
+        "crate::ApplyPatchFileUpdateMode",
+        "crates/codex-tools-runtime/src/lib.rs",
+        "legacy boundary predates source-level adapter provenance",
+    ),
+    (
+        "crate::contracts::ExecCommandInput",
+        "crates/codex-tools-runtime/src/contracts/exec_command.rs",
+        "legacy boundary predates source-level adapter provenance",
+    ),
+    (
+        "crate::contracts::WriteStdinInput",
+        "crates/codex-tools-runtime/src/contracts/write_stdin.rs",
+        "legacy boundary predates source-level adapter provenance",
+    ),
+    (
+        "crate::process::ProcessManager",
+        "crates/codex-tools-runtime/src/process/manager.rs",
+        "legacy boundary predates source-level adapter provenance",
+    ),
+    (
+        "crate::process::PendingResult",
+        "crates/codex-tools-runtime/src/process/manager.rs",
+        "legacy boundary predates source-level adapter provenance",
+    ),
+    (
+        "crate::contracts",
+        "crates/skill-store/src/contracts.rs",
+        "legacy boundary predates source-level adapter provenance",
     ),
 ];
 
@@ -67,6 +123,19 @@ struct Boundary {
     local_path: String,
     status: String,
     requirements: Vec<String>,
+    #[serde(default)]
+    local_sha256: Option<String>,
+    #[serde(default)]
+    sources: Vec<BoundarySource>,
+    #[serde(default)]
+    provenance_exemption: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BoundarySource {
+    upstream_path: String,
+    source_sha256: String,
+    license: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -165,6 +234,63 @@ pub fn verify_root(root: &Path) -> anyhow::Result<()> {
             boundary.symbol
         );
         verify_requirement_ids(&boundary.requirements, &boundary.symbol)?;
+        if boundary.sources.is_empty() {
+            ensure!(
+                boundary.local_sha256.is_none(),
+                "adapted boundary {} has local_sha256 but no sources",
+                boundary.symbol
+            );
+            let exemption = boundary.provenance_exemption.as_deref().with_context(|| {
+                format!(
+                    "adapted boundary {} lacks sources and a pinned provenance exemption",
+                    boundary.symbol
+                )
+            })?;
+            ensure!(
+                !exemption.trim().is_empty(),
+                "empty provenance exemption for boundary {}",
+                boundary.symbol
+            );
+            let expected = PINNED_BOUNDARY_PROVENANCE_EXEMPTIONS
+                .iter()
+                .find_map(|(symbol, local_path, rationale)| {
+                    (*symbol == boundary.symbol).then_some((*local_path, *rationale))
+                })
+                .with_context(|| {
+                    format!(
+                        "boundary {} is not eligible for a provenance exemption",
+                        boundary.symbol
+                    )
+                })?;
+            ensure!(
+                boundary.local_path == expected.0,
+                "provenance exemption for boundary {} disagrees with the pinned local path",
+                boundary.symbol
+            );
+            ensure!(
+                exemption == expected.1,
+                "provenance exemption for boundary {} disagrees with the pinned rationale",
+                boundary.symbol
+            );
+        } else {
+            ensure!(
+                boundary.provenance_exemption.is_none(),
+                "adapted boundary {} cannot combine sources with a provenance exemption",
+                boundary.symbol
+            );
+            let local_sha256 = boundary.local_sha256.as_deref().with_context(|| {
+                format!("adapted boundary {} lacks local_sha256", boundary.symbol)
+            })?;
+            verify_hash(root, &boundary.local_path, local_sha256)?;
+            for source in &boundary.sources {
+                ensure!(
+                    source.license == "Apache-2.0",
+                    "wrong source license for boundary {}",
+                    boundary.symbol
+                );
+                verify_trusted_source_hash(&source.upstream_path, &source.source_sha256)?;
+            }
+        }
     }
 
     for file in &manifest.files {

@@ -31,9 +31,12 @@ fn audit_fixture() -> tempfile::TempDir {
     for relative in [
         "crates/codex-tools-runtime/src/lib.rs",
         "crates/codex-tools-runtime/src/apply_patch_parser_boundary.rs",
+        "crates/codex-tools-runtime/src/contracts/apply_patch.rs",
         "crates/codex-tools-runtime/src/contracts/mod.rs",
         "crates/codex-tools-runtime/src/contracts/exec_command.rs",
         "crates/codex-tools-runtime/src/contracts/write_stdin.rs",
+        "crates/codex-tools-runtime/src/patch/adapter.rs",
+        "crates/codex-tools-runtime/src/patch/mod.rs",
         "crates/codex-tools-runtime/src/process/manager.rs",
         "crates/skill-store/src/contracts.rs",
     ] {
@@ -48,6 +51,27 @@ fn audit_fixture() -> tempfile::TempDir {
         copy_tree(source_root, fixture.path(), relative);
     }
     fixture
+}
+
+fn mutate_boundary_manifest(
+    fixture: &std::path::Path,
+    symbol: &str,
+    mutate: impl FnOnce(&mut toml::map::Map<String, toml::Value>),
+) {
+    let path = fixture.join("third_party/openai-codex/SOURCE.toml");
+    let mut manifest: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let boundary = manifest["boundaries"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find_map(|boundary| {
+            let table = boundary.as_table_mut().unwrap();
+            (table["symbol"].as_str() == Some(symbol)).then_some(table)
+        })
+        .unwrap();
+    mutate(boundary);
+    std::fs::write(path, toml::to_string(&manifest).unwrap()).unwrap();
 }
 
 #[test]
@@ -111,6 +135,70 @@ fn repository_audit_runs_end_to_end_and_rejects_notice_mutation() {
     .unwrap();
     let error = verify_root(fixture.path()).unwrap_err();
     assert!(error.to_string().contains("notice verification"));
+}
+
+#[test]
+fn rejects_adapter_boundary_with_removed_provenance() {
+    let fixture = audit_fixture();
+    mutate_boundary_manifest(fixture.path(), "crate::patch::adapter", |boundary| {
+        boundary.remove("sources");
+        boundary.remove("local_sha256");
+    });
+
+    let error = verify_root(fixture.path()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("lacks sources and a pinned provenance exemption")
+    );
+}
+
+#[test]
+fn rejects_unpinned_boundary_provenance_exemption() {
+    let fixture = audit_fixture();
+    mutate_boundary_manifest(fixture.path(), "crate::patch::adapter", |boundary| {
+        boundary.remove("sources");
+        boundary.remove("local_sha256");
+        boundary.insert(
+            "provenance_exemption".to_string(),
+            toml::Value::String("newly declared exemption".to_string()),
+        );
+    });
+
+    let error = verify_root(fixture.path()).unwrap_err();
+    assert!(error.to_string().contains("is not eligible"));
+}
+
+#[test]
+fn rejects_modified_pinned_boundary_provenance_exemption() {
+    let fixture = audit_fixture();
+    mutate_boundary_manifest(fixture.path(), "crate::unified_exec", |boundary| {
+        boundary.insert(
+            "provenance_exemption".to_string(),
+            toml::Value::String("different rationale".to_string()),
+        );
+    });
+
+    let error = verify_root(fixture.path()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("disagrees with the pinned rationale")
+    );
+}
+
+#[test]
+fn rejects_empty_pinned_boundary_provenance_exemption() {
+    let fixture = audit_fixture();
+    mutate_boundary_manifest(fixture.path(), "crate::unified_exec", |boundary| {
+        boundary.insert(
+            "provenance_exemption".to_string(),
+            toml::Value::String(String::new()),
+        );
+    });
+
+    let error = verify_root(fixture.path()).unwrap_err();
+    assert!(error.to_string().contains("empty provenance exemption"));
 }
 
 #[test]

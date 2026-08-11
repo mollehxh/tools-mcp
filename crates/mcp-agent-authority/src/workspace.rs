@@ -18,6 +18,8 @@ pub enum AuthorityError {
     ProtectedRoot,
     #[error("path contains an unsupported component")]
     InvalidPath,
+    #[error("workspace and global skill roots must not overlap")]
+    OverlappingRoots,
     #[error("authority setup failed: {0}")]
     Setup(#[source] std::io::Error),
 }
@@ -30,6 +32,7 @@ pub struct WorkspaceAuthority {
 #[derive(Debug)]
 struct AuthorityInner {
     workspace: PathBuf,
+    workspace_dir: Dir,
     project_skills: ManagedRoot,
     global_skills: ManagedRoot,
     staging: ManagedRoot,
@@ -59,6 +62,10 @@ impl WorkspaceAuthority {
         if !workspace.is_dir() {
             return Err(AuthorityError::InvalidPath);
         }
+        let global_skills = absolute_lexically(global_skills.as_ref())?;
+        if roots_overlap(&workspace, &global_skills) {
+            return Err(AuthorityError::OverlappingRoots);
+        }
 
         let workspace_dir = Dir::open_ambient_dir(&workspace, ambient_authority())
             .map_err(AuthorityError::Setup)?;
@@ -67,12 +74,18 @@ impl WorkspaceAuthority {
             open_or_create_relative_dir(&workspace_dir, Path::new(".agents/skills"))?;
         let staging_path = workspace.join(".mcp-agent/staging");
         let staging = open_or_create_relative_dir(&workspace_dir, Path::new(".mcp-agent/staging"))?;
-        let global_skills = absolute_lexically(global_skills.as_ref())?;
         let global_dir = open_absolute_dir_no_follow(&global_skills)?;
+        let global_skills = global_skills
+            .canonicalize()
+            .map_err(AuthorityError::Setup)?;
+        if roots_overlap(&workspace, &global_skills) {
+            return Err(AuthorityError::OverlappingRoots);
+        }
 
         Ok(Self {
             inner: Arc::new(AuthorityInner {
                 workspace,
+                workspace_dir,
                 project_skills: ManagedRoot::new(
                     project_skills_path,
                     ManagedWriteScope::ProjectSkills,
@@ -113,6 +126,10 @@ impl WorkspaceAuthority {
     #[must_use]
     pub fn staging(&self) -> &ManagedRoot {
         &self.inner.staging
+    }
+
+    pub(crate) fn try_clone_workspace_dir(&self) -> std::io::Result<Dir> {
+        self.inner.workspace_dir.try_clone()
     }
 }
 
@@ -214,11 +231,22 @@ fn open_or_create_component(parent: &Dir, name: &OsStr) -> Result<Dir, Authority
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(AuthorityError::Setup(error)),
     }
+    open_dir_component_no_follow(parent, name).map_err(AuthorityError::Setup)
+}
+
+pub(crate) fn open_dir_component_no_follow(parent: &Dir, name: &OsStr) -> std::io::Result<Dir> {
     let mut options = OpenOptions::new();
-    options.read(true)._cap_fs_ext_follow(FollowSymlinks::No);
-    let file = parent
-        .open_with(name, &options)
-        .map_err(AuthorityError::Setup)?;
+    options
+        .read(true)
+        ._cap_fs_ext_follow(FollowSymlinks::No)
+        ._cap_fs_ext_maybe_dir(true);
+    let file = parent.open_with(name, &options)?;
+    if !file.metadata()?.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotADirectory,
+            "path component is not a directory",
+        ));
+    }
     Ok(Dir::from_std_file(file.into_std()))
 }
 
@@ -305,16 +333,28 @@ fn is_protected(workspace: &Path, path: &Path) -> bool {
             Component::Normal(part) => Some(part),
             _ => None,
         })
-        .is_some_and(|part| {
-            PROTECTED_TOP_LEVEL
-                .iter()
-                .any(|name| part == OsStr::new(name))
-        })
+        .is_some_and(is_protected_top_level)
+}
+
+pub(crate) fn is_protected_top_level(component: &OsStr) -> bool {
+    let Some(component) = component.to_str() else {
+        return false;
+    };
+    #[cfg(windows)]
+    let component = component.trim_end_matches(['.', ' ']);
+
+    PROTECTED_TOP_LEVEL
+        .iter()
+        .any(|name| component.eq_ignore_ascii_case(name))
+}
+
+fn roots_overlap(left: &Path, right: &Path) -> bool {
+    left.starts_with(right) || right.starts_with(left)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthorityError, configured_global_skills};
+    use super::{AuthorityError, configured_global_skills, is_protected_top_level, roots_overlap};
     use std::ffi::OsString;
     use std::path::PathBuf;
 
@@ -334,6 +374,39 @@ mod tests {
         })
         .unwrap();
         assert_eq!(global, PathBuf::from("/tmp/test-home/.agents/skills"));
+    }
+
+    #[test]
+    fn protected_roots_are_ascii_case_insensitive() {
+        assert!(is_protected_top_level(OsString::from(".GIT").as_os_str()));
+        assert!(is_protected_top_level(OsString::from(".CoDeX").as_os_str()));
+        assert!(is_protected_top_level(
+            OsString::from(".MCP-AGENT").as_os_str()
+        ));
+        assert!(!is_protected_top_level(
+            OsString::from(".git-data").as_os_str()
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn protected_roots_reject_windows_trailing_dot_and_space_aliases() {
+        assert!(is_protected_top_level(OsString::from(".git. ").as_os_str()));
+        assert!(is_protected_top_level(
+            OsString::from(".CODEX...").as_os_str()
+        ));
+    }
+
+    #[test]
+    fn overlapping_roots_include_equal_and_ancestor_paths() {
+        let workspace = PathBuf::from("/workspace");
+        assert!(roots_overlap(&workspace, &workspace));
+        assert!(roots_overlap(&workspace, &workspace.join("global")));
+        assert!(roots_overlap(PathBuf::from("/").as_path(), &workspace));
+        assert!(!roots_overlap(
+            &workspace,
+            PathBuf::from("/outside/global").as_path()
+        ));
     }
 
     #[cfg(windows)]
