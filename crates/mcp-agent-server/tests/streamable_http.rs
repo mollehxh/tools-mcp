@@ -1,9 +1,14 @@
 mod common;
 
-use common::{Fixture, yielded_command};
+use common::{Fixture, arguments, complete, yielded_command};
 use mcp_agent_server::http::router;
 use mcp_agent_server::http::{HttpConfig, HttpConfigError};
 use serde_json::json;
+use skill_store::{
+    FetchedRepository, GitFetcher, InstallLimits, NormalizedGitSource, RepositoryEntry,
+    SkillInstallError,
+};
+use std::sync::{Arc, Condvar, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
@@ -15,8 +20,6 @@ fn defaults_are_the_fixed_u7_admission_contract() {
     assert_eq!(config.max_header_count, 100);
     assert_eq!(config.max_in_flight_requests, 32);
     assert_eq!(config.max_sse_responses, 16);
-    assert!(!config.legacy_session_mode);
-    assert!(config.json_response);
 }
 
 #[test]
@@ -399,14 +402,44 @@ async fn upload_and_response_timeouts_are_enforced_and_recover() {
     fixture.processes.shutdown().await;
 }
 
+#[derive(Debug)]
+struct BlockingFetcher {
+    state: Arc<(Mutex<(bool, bool)>, Condvar)>,
+}
+
+impl GitFetcher for BlockingFetcher {
+    fn fetch(
+        &self,
+        source: &NormalizedGitSource,
+        _limits: &InstallLimits,
+    ) -> Result<FetchedRepository, SkillInstallError> {
+        let (lock, wake) = &*self.state;
+        let mut state = lock.lock().unwrap();
+        state.0 = true;
+        wake.notify_all();
+        while !state.1 {
+            state = wake.wait(state).unwrap();
+        }
+        Ok(FetchedRepository {
+            repository: source.repository.clone(),
+            commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
+            entries: vec![RepositoryEntry::regular(
+                "SKILL.md",
+                b"---\nname: late\ndescription: late install\n---\n".to_vec(),
+            )],
+        })
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sse_saturation_returns_429_and_releases_the_permit() {
-    let fixture = Fixture::new();
+async fn timed_out_install_worker_cannot_publish_later() {
+    let state = Arc::new((Mutex::new((false, false)), Condvar::new()));
+    let fixture = Fixture::with_fetcher(Arc::new(BlockingFetcher {
+        state: Arc::clone(&state),
+    }));
     let token = CancellationToken::new();
     let config = HttpConfig {
-        max_in_flight_requests: 2,
-        max_sse_responses: 1,
-        json_response: false,
+        response_idle_timeout: std::time::Duration::from_millis(50),
         ..HttpConfig::default()
     };
     let app = router(fixture.context.clone(), config, token.child_token()).unwrap();
@@ -421,15 +454,16 @@ async fn sse_saturation_returns_429_and_releases_the_permit() {
                 .unwrap();
         }
     });
-    let client = reqwest::Client::new();
-    let url = format!("http://{address}/mcp");
-    let slow_call = json!({
+    let call = json!({
         "jsonrpc": "2.0",
-        "id": 30,
+        "id": 20,
         "method": "tools/call",
         "params": {
-            "name": "exec_command",
-            "arguments": {"cmd": yielded_command(), "yield_time_ms": 1000, "login": false},
+            "name": "skills.install",
+            "arguments": {
+                "source": "https://example.com/skills.git",
+                "scope": "project"
+            },
             "_meta": {
                 "io.modelcontextprotocol/protocolVersion": "2026-07-28",
                 "io.modelcontextprotocol/clientInfo": {"name": "u7-test", "version": "1"},
@@ -437,47 +471,41 @@ async fn sse_saturation_returns_429_and_releases_the_permit() {
             }
         }
     });
-    let first = tokio::spawn({
-        let client = client.clone();
-        let url = url.clone();
-        async move {
-            client
-                .post(url)
-                .header("Accept", "application/json, text/event-stream")
-                .header("MCP-Protocol-Version", "2026-07-28")
-                .header("Mcp-Method", "tools/call")
-                .header("Mcp-Name", "exec_command")
-                .json(&slow_call)
-                .send()
-                .await
-                .unwrap()
-        }
-    });
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    let saturated = client
-        .post(&url)
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{address}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("MCP-Protocol-Version", "2026-07-28")
-        .header("Mcp-Method", "tools/list")
-        .json(&modern_tools_list(31))
+        .header("Mcp-Method", "tools/call")
+        .header("Mcp-Name", "skills.install")
+        .json(&call)
         .send()
         .await
         .unwrap();
-    assert_eq!(saturated.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(first.await.unwrap().status(), reqwest::StatusCode::OK);
+    assert_eq!(response.status(), reqwest::StatusCode::GATEWAY_TIMEOUT);
 
-    let recovered = client
-        .post(&url)
-        .header("Accept", "application/json, text/event-stream")
-        .header("MCP-Protocol-Version", "2026-07-28")
-        .header("Mcp-Method", "tools/list")
-        .json(&modern_tools_list(32))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(recovered.status(), reqwest::StatusCode::OK);
+    {
+        let (lock, wake) = &*state;
+        let mut state = lock.lock().unwrap();
+        assert!(state.0, "install fetch never started");
+        state.1 = true;
+        wake.notify_all();
+    }
+    fixture.context.wait_for_install_operations().await;
 
+    let listed = complete(
+        fixture
+            .handler()
+            .call("skills.list", Some(arguments(json!({"scope": "project"}))))
+            .await,
+    );
+    assert!(
+        listed.structured_content.unwrap()["skills"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "timed-out install published after the response"
+    );
     token.cancel();
     server.await.unwrap();
     fixture.processes.shutdown().await;

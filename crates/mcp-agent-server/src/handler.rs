@@ -17,6 +17,7 @@ use skill_store::{
     SkillScope, SkillStoreError,
 };
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 pub struct AgentHandler {
@@ -39,11 +40,21 @@ impl AgentHandler {
         name: &str,
         arguments: Option<Map<String, Value>>,
     ) -> CallToolResponse {
+        self.call_with_cancellation(name, arguments, CancellationToken::new())
+            .await
+    }
+
+    async fn call_with_cancellation(
+        &self,
+        name: &str,
+        arguments: Option<Map<String, Value>>,
+        cancellation: CancellationToken,
+    ) -> CallToolResponse {
         let result = match name {
             "exec_command" => self.exec_command(arguments).await,
             "write_stdin" => self.write_stdin(arguments).await,
             "apply_patch" => self.apply_patch(arguments).await,
-            "skills.install" => self.install_skill(arguments).await,
+            "skills.install" => self.install_skill(arguments, cancellation).await,
             "skills.list" => self.list_skills(arguments).await,
             "skills.read" => self.read_skill(arguments).await,
             _ => error_result("unknown_tool", "the requested tool is not available", None),
@@ -114,6 +125,7 @@ impl AgentHandler {
     async fn install_skill(
         &self,
         arguments: Option<Map<String, Value>>,
+        cancellation: CancellationToken,
     ) -> rmcp::model::CallToolResult {
         let input: InstallToolInput = match decode(arguments) {
             Ok(input) => input,
@@ -126,7 +138,15 @@ impl AgentHandler {
             scope: input.scope,
         };
         let installer = Arc::clone(&self.context.installer);
-        match tokio::task::spawn_blocking(move || installer.install(&input)).await {
+        let Some((request, worker)) = self.context.begin_install_operation(cancellation) else {
+            return error_result("shutting_down", "skill installation is shutting down", None);
+        };
+        let result = tokio::task::spawn_blocking(move || {
+            installer.install_cancellable(&input, || worker.is_cancelled())
+        })
+        .await;
+        drop(request);
+        match result {
             Ok(Ok(output)) => InstallToolOutput::from_store(&output).map_or_else(
                 || {
                     error_result(
@@ -226,7 +246,7 @@ impl ServerHandler for AgentHandler {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         if self.get_tool(&request.name).is_none() {
             return Err(ErrorData::new(
@@ -235,7 +255,9 @@ impl ServerHandler for AgentHandler {
                 None,
             ));
         }
-        Ok(self.call(&request.name, request.arguments).await)
+        Ok(self
+            .call_with_cancellation(&request.name, request.arguments, context.ct)
+            .await)
     }
 
     async fn list_tools(
@@ -302,6 +324,7 @@ fn install_error(error: &SkillInstallError) -> rmcp::model::CallToolResult {
         SkillInstallError::MultipleSkills { .. } => "multiple_skills",
         SkillInstallError::Collision => "skill_collision",
         SkillInstallError::LimitExceeded => "install_limit_exceeded",
+        SkillInstallError::Cancelled => "shutting_down",
         SkillInstallError::InvalidSource | SkillInstallError::NonPublicSource => "unsafe_source",
         _ => "install_failed",
     };

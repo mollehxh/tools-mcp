@@ -3,7 +3,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
-use axum::http::header::{ACCEPT, CONTENT_LENGTH, CONTENT_TYPE, ORIGIN};
+use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE, ORIGIN};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::Response;
 use futures_util::StreamExt;
@@ -28,8 +28,6 @@ pub struct HttpConfig {
     pub max_sse_responses: usize,
     pub upload_idle_timeout: Duration,
     pub response_idle_timeout: Duration,
-    pub legacy_session_mode: bool,
-    pub json_response: bool,
 }
 
 impl Default for HttpConfig {
@@ -44,8 +42,6 @@ impl Default for HttpConfig {
             max_sse_responses: 16,
             upload_idle_timeout: Duration::from_secs(15),
             response_idle_timeout: Duration::from_mins(2),
-            legacy_session_mode: false,
-            json_response: true,
         }
     }
 }
@@ -102,7 +98,6 @@ struct Admission {
     upload_idle_timeout: Duration,
     response_idle_timeout: Duration,
     allowed_origins: Arc<[String]>,
-    json_response: bool,
 }
 
 /// Builds the fixed `/mcp` Streamable HTTP router.
@@ -117,8 +112,8 @@ pub fn router(
 ) -> Result<Router, HttpConfigError> {
     config.validate()?;
     let rmcp_config = StreamableHttpServerConfig::default()
-        .with_legacy_session_mode(config.legacy_session_mode)
-        .with_json_response(config.json_response)
+        .with_legacy_session_mode(false)
+        .with_json_response(true)
         .with_sse_keep_alive(None)
         .with_max_request_body_bytes(config.max_request_body_bytes)
         .with_allowed_hosts(config.allowed_hosts)
@@ -139,7 +134,6 @@ pub fn router(
         upload_idle_timeout: config.upload_idle_timeout,
         response_idle_timeout: config.response_idle_timeout,
         allowed_origins: config.allowed_origins.into(),
-        json_response: config.json_response,
     };
     Ok(Router::new()
         .nest_service(MCP_ENDPOINT, service)
@@ -179,20 +173,7 @@ async fn enforce_admission(
             "request concurrency limit reached",
         );
     };
-    let accepts_sse_only = !admission.json_response
-        || request.headers().get(ACCEPT).is_some_and(|accept| {
-            accept.to_str().ok().is_some_and(|accept| {
-                accept.contains("text/event-stream") && !accept.contains("application/json")
-            })
-        });
-    let sse_permit = if accepts_sse_only {
-        match Arc::clone(&admission.sse).try_acquire_owned() {
-            Ok(permit) => Some(permit),
-            Err(_) => return too_many_sse_responses(),
-        }
-    } else {
-        None
-    };
+    let sse_permit = None;
     let request = match buffer_request_body(
         request,
         admission.max_request_body_bytes,
@@ -329,4 +310,55 @@ fn too_many_sse_responses() -> Response {
         StatusCode::TOO_MANY_REQUESTS,
         "SSE concurrency limit reached",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{hold_permits_and_enforce_response_idle, too_many_sse_responses};
+    use axum::body::{Body, Bytes, to_bytes};
+    use axum::http::StatusCode;
+    use axum::response::Response;
+    use futures_util::StreamExt;
+    use std::convert::Infallible;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::Semaphore;
+
+    #[tokio::test]
+    async fn response_body_idle_timeout_releases_request_and_sse_permits() {
+        let requests = Arc::new(Semaphore::new(1));
+        let sse = Arc::new(Semaphore::new(1));
+        let request_permit = Arc::clone(&requests).acquire_owned().await.unwrap();
+        let sse_permit = Arc::clone(&sse).acquire_owned().await.unwrap();
+        let body = futures_util::stream::once(async {
+            Ok::<_, Infallible>(Bytes::from_static(b"event: ready\n\n"))
+        })
+        .chain(futures_util::stream::pending());
+        let response = Response::new(Body::from_stream(body));
+        let response = hold_permits_and_enforce_response_idle(
+            response,
+            request_permit,
+            Some(sse_permit),
+            Duration::from_millis(20),
+        );
+
+        assert!(Arc::clone(&requests).try_acquire_owned().is_err());
+        assert!(Arc::clone(&sse).try_acquire_owned().is_err());
+        let body_error =
+            tokio::time::timeout(Duration::from_secs(1), to_bytes(response.into_body(), 1024))
+                .await
+                .expect("the body wrapper must enforce its own timeout")
+                .expect_err("a stalled response body must terminate with an error");
+        assert!(
+            body_error
+                .to_string()
+                .contains("response body idle timeout")
+        );
+        assert_eq!(requests.available_permits(), 1);
+        assert_eq!(sse.available_permits(), 1);
+        assert_eq!(
+            too_many_sse_responses().status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
 }

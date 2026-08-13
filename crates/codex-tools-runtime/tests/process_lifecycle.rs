@@ -402,6 +402,39 @@ async fn cancelled_poll_restores_drained_output_before_handoff() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_collection_restores_output_for_the_next_poll() {
+    let fixture = RuntimeFixture::new();
+    let manager = fixture.manager(64, Duration::from_mins(5));
+    let owner = OwnerId::from("alice");
+    let session_id = start(&manager, &owner, "sleep 0.4; printf recoverable; sleep 2").await;
+
+    let timed_out = tokio::time::timeout(
+        Duration::from_millis(300),
+        manager.write_stdin(
+            &owner,
+            WriteStdinInput {
+                session_id,
+                chars: String::new(),
+                yield_time_ms: 1_000,
+                max_output_tokens: None,
+            },
+        ),
+    )
+    .await;
+    assert!(timed_out.is_err(), "the collection should be cancelled");
+
+    let replay = manager
+        .write_stdin(&owner, WriteStdinInput::poll(session_id))
+        .await
+        .unwrap()
+        .handoff()
+        .await
+        .unwrap();
+    assert!(replay.output.contains("recoverable"), "{replay:?}");
+    manager.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tombstone_expires_and_shutdown_terminates_every_session() {
     let fixture = RuntimeFixture::new();
     let manager = fixture.manager(64, Duration::from_millis(50));

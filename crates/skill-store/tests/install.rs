@@ -5,6 +5,7 @@ use skill_store::{
 };
 use std::fs;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[path = "../../../tests/conformance/skills_install.rs"]
 mod conformance;
@@ -88,6 +89,40 @@ fn installs_one_root_skill_without_returning_its_body_and_is_immediately_visible
         .unwrap();
     assert_eq!(listed.skills.len(), 1);
     assert_eq!(listed.skills[0].package, "demo");
+}
+
+#[test]
+fn cancellation_after_fetch_prevents_durable_publication() {
+    let (_root, authority) = fixture();
+    let catalog = Arc::new(SkillCatalog::new(&authority).unwrap());
+    let installer = SkillInstaller::with_fetcher(
+        &authority,
+        Arc::clone(&catalog),
+        Arc::new(FixtureFetcher {
+            repository: repository(conformance::representative_tree()),
+        }),
+    )
+    .unwrap();
+    let checks = AtomicUsize::new(0);
+
+    let error = installer
+        .install_cancellable(
+            &conformance::representative_input(SkillScope::Project),
+            || checks.fetch_add(1, Ordering::SeqCst) > 0,
+        )
+        .unwrap_err();
+
+    assert!(matches!(error, skill_store::SkillInstallError::Cancelled));
+    assert!(
+        catalog
+            .list(&SkillListInput {
+                scope: SkillScope::Project,
+                cursor: None,
+            })
+            .unwrap()
+            .skills
+            .is_empty()
+    );
 }
 
 #[test]

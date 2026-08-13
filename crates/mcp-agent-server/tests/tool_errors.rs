@@ -18,21 +18,65 @@ fn successful_results_have_equivalent_structured_and_text_content() {
 }
 
 #[test]
-fn recoverable_errors_are_structured_and_redacted() {
-    let result = error_result("unknown_session", "session is not available", None);
+fn recoverable_errors_redact_host_paths_from_structured_and_text_content() {
+    let cases = [
+        (
+            "failed to read /Users/alice/private/project/config.json: permission denied",
+            "failed to read [redacted-path]: permission denied",
+            "/Users/alice/private/project/config.json",
+        ),
+        (
+            r"failed to read C:\Users\alice\private\project\config.json: access denied",
+            "failed to read [redacted-path]: access denied",
+            r"C:\Users\alice\private\project\config.json",
+        ),
+        (
+            "failed to read /secret: permission denied",
+            "failed to read [redacted-path]: permission denied",
+            "/secret",
+        ),
+    ];
 
-    assert_eq!(result.is_error, Some(true));
-    assert_eq!(
-        result.structured_content.as_ref().unwrap()["error"],
-        "unknown_session"
-    );
-    assert!(
-        !result.content[0]
-            .as_text()
-            .unwrap()
-            .text
-            .contains("/Users/")
-    );
+    for (message, expected, path) in cases {
+        let result = error_result(
+            "adapter_failed",
+            message,
+            Some(json!({
+                "kind": "io",
+                "path": path,
+            })),
+        );
+
+        assert_eq!(result.is_error, Some(true));
+        let structured = result.structured_content.as_ref().unwrap();
+        assert_eq!(structured["error"], "adapter_failed");
+        assert_eq!(structured["message"], expected);
+        assert_eq!(structured["details"]["kind"], "io");
+        assert_eq!(structured["details"]["path"], "[redacted-path]");
+
+        let text = result.content[0].as_text().unwrap().text.as_str();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(text).unwrap(),
+            *structured
+        );
+        assert!(!text.contains("/Users/alice"));
+        assert!(!text.contains(r"C:\Users\alice"));
+    }
+}
+
+#[test]
+fn error_redaction_preserves_urls_resource_handles_and_ordinary_text() {
+    let message = "see https://example.com/docs/errors and skill://catalog/rust at /mcp";
+    let details = json!({
+        "documentation": "https://example.com/docs/errors",
+        "resource": "skill://catalog/rust",
+        "endpoint": "/mcp",
+    });
+    let result = error_result("adapter_failed", message, Some(details.clone()));
+    let structured = result.structured_content.unwrap();
+
+    assert_eq!(structured["message"], message);
+    assert_eq!(structured["details"], details);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

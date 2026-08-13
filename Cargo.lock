@@ -2071,6 +2071,7 @@ dependencies = [
  "mcp-agent-authority",
  "mcp-agent-server",
  "skill-store",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",

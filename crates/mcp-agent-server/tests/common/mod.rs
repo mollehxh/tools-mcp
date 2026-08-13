@@ -41,6 +41,10 @@ pub struct Fixture {
 
 impl Fixture {
     pub fn new() -> Self {
+        Self::with_fetcher(Arc::new(FixtureFetcher))
+    }
+
+    pub fn with_fetcher(fetcher: Arc<dyn GitFetcher>) -> Self {
         let root = tempfile::tempdir().unwrap();
         let workspace = root.path().join("workspace");
         let global = root.path().join("global-skills");
@@ -66,12 +70,7 @@ impl Fixture {
         let processes = Arc::new(ProcessManager::new(Arc::new(sandbox)));
         let catalog = Arc::new(SkillCatalog::new(&authority).unwrap());
         let installer = Arc::new(
-            SkillInstaller::with_fetcher(
-                &authority,
-                Arc::clone(&catalog),
-                Arc::new(FixtureFetcher),
-            )
-            .unwrap(),
+            SkillInstaller::with_fetcher(&authority, Arc::clone(&catalog), fetcher).unwrap(),
         );
         let context = Arc::new(ApplicationContext::new(
             authority,

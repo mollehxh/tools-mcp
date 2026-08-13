@@ -19,6 +19,39 @@ enum ExitState {
     Exited(Option<i32>),
 }
 
+struct CollectedOutput<'a> {
+    output: &'a OutputState,
+    staged: Option<HeadTailBuffer>,
+}
+
+impl<'a> CollectedOutput<'a> {
+    fn new(output: &'a OutputState) -> Self {
+        Self {
+            output,
+            staged: Some(HeadTailBuffer::default()),
+        }
+    }
+
+    fn push(&mut self, buffer: HeadTailBuffer) {
+        self.staged
+            .as_mut()
+            .expect("collection is active")
+            .push_buffer(buffer);
+    }
+
+    fn finish(mut self) -> HeadTailBuffer {
+        self.staged.take().expect("collection is active")
+    }
+}
+
+impl Drop for CollectedOutput<'_> {
+    fn drop(&mut self) {
+        if let Some(staged) = self.staged.take() {
+            self.output.restore(staged);
+        }
+    }
+}
+
 impl OutputState {
     pub(crate) fn new(readers: usize) -> Self {
         Self {
@@ -95,7 +128,7 @@ impl OutputState {
     }
 
     pub(crate) async fn collect_until(&self, deadline: Instant) -> HeadTailBuffer {
-        let mut collected = HeadTailBuffer::default();
+        let mut collected = CollectedOutput::new(self);
         loop {
             let output_notified = self.notify.notified();
             let closed_notified = self.closed_notify.notified();
@@ -104,9 +137,9 @@ impl OutputState {
             output_notified.as_mut().enable();
             closed_notified.as_mut().enable();
 
-            collected.push_buffer(self.drain_now());
+            collected.push(self.drain_now());
             if self.is_closed() {
-                collected.push_buffer(self.drain_now());
+                collected.push(self.drain_now());
                 break;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -119,7 +152,7 @@ impl OutputState {
                 () = tokio::time::sleep(remaining) => break,
             }
         }
-        collected
+        collected.finish()
     }
 }
 

@@ -84,6 +84,8 @@ pub enum SkillInstallError {
     CommitFailed,
     #[error("skill installation authority setup failed")]
     AuthoritySetup,
+    #[error("skill installation was cancelled")]
+    Cancelled,
 }
 
 impl SkillInstallError {
@@ -158,12 +160,37 @@ impl SkillInstaller {
         &self,
         input: &SkillInstallInput,
     ) -> Result<SkillInstallOutput, SkillInstallError> {
+        self.install_cancellable(input, || false)
+    }
+
+    /// Validates, stages, and atomically installs exactly one skill package,
+    /// stopping before durable publication when cancellation is observed.
+    ///
+    /// Cancellation is cooperative around blocking fetch and staging work. An
+    /// atomic package commit that has already started is allowed to finish.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SkillInstallError::Cancelled`] when `is_cancelled` becomes
+    /// true before the atomic publication step, in addition to normal install
+    /// errors.
+    pub fn install_cancellable(
+        &self,
+        input: &SkillInstallInput,
+        is_cancelled: impl Fn() -> bool,
+    ) -> Result<SkillInstallOutput, SkillInstallError> {
+        if is_cancelled() {
+            return Err(SkillInstallError::Cancelled);
+        }
         let source = normalize_git_source(
             &input.repository,
             input.selector.as_deref(),
             input.revision.as_deref(),
         )?;
         let fetched = self.fetcher.fetch(&source, &self.limits)?;
+        if is_cancelled() {
+            return Err(SkillInstallError::Cancelled);
+        }
         if fetched.repository != source.repository || !source::is_commit_id(&fetched.commit) {
             return Err(SkillInstallError::FetchFailed);
         }
@@ -197,6 +224,9 @@ impl SkillInstaller {
         );
         let staging = self.staging(input.scope);
         let _scope_lock = commit::acquire_scope_lock(staging)?;
+        if is_cancelled() {
+            return Err(SkillInstallError::Cancelled);
+        }
         self.revalidate_destination(input.scope)?;
         self.reject_canonical_collision(input.scope, &metadata.name)?;
         let staged = commit::materialize_package(staging, &staging_name, &entries)?;
@@ -221,6 +251,10 @@ impl SkillInstaller {
         if let Err(error) = self.reject_canonical_collision(input.scope, &metadata.name) {
             let _ = commit::discard_package(staging, &staging_name);
             return Err(error);
+        }
+        if is_cancelled() {
+            let _ = commit::discard_package(staging, &staging_name);
+            return Err(SkillInstallError::Cancelled);
         }
         if let Err(error) = commit::commit_package(staging, &staging_name, &destination, &package) {
             let _ = commit::discard_package(staging, &staging_name);
