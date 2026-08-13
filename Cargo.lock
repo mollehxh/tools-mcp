@@ -2062,6 +2062,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4facc753ae494aeb6e3c22f839b158aebd4f9270f55cd3c79906c45476c47ab4"
 
 [[package]]
+name = "mcp-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "codex-tools-runtime",
+ "mcp-agent-authority",
+ "mcp-agent-server",
+ "skill-store",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "mcp-agent-authority"
 version = "0.1.0"
 dependencies = [
@@ -2080,9 +2095,20 @@ dependencies = [
 name = "mcp-agent-server"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "axum",
  "codex-tools-runtime",
+ "futures-util",
+ "mcp-agent-authority",
+ "reqwest",
  "rmcp",
+ "serde",
  "serde_json",
+ "skill-store",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
