@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+mcp-agent-authority = { path = "../mcp-agent-authority" }
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
@@ -13,6 +14,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 pretty_assertions.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

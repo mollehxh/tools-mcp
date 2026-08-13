@@ -1,20 +1,20 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SkillScope {
     Project,
     Global,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SkillAuthority {
     Host,
 }
 
 impl SkillScope {
-    const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Project => "project",
             Self::Global => "global",
@@ -30,14 +30,14 @@ pub struct SkillListInput {
     pub cursor: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SkillSourceKind {
     Host,
     Git,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SkillSource {
     pub kind: SkillSourceKind,
@@ -50,7 +50,7 @@ pub struct SkillSource {
 }
 
 impl SkillSource {
-    const fn host() -> Self {
+    pub(crate) const fn host() -> Self {
         Self {
             kind: SkillSourceKind::Host,
             repository: None,
@@ -67,7 +67,7 @@ pub struct HostSkillMetadata {
     pub description: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ListedSkill {
     pub authority: SkillAuthority,
@@ -80,7 +80,7 @@ pub struct ListedSkill {
 }
 
 impl ListedSkill {
-    fn from_host(scope: SkillScope, metadata: HostSkillMetadata) -> Self {
+    pub(crate) fn from_host(scope: SkillScope, metadata: HostSkillMetadata) -> Self {
         let main_resource = format!(
             "skill://host/{}/{}/SKILL.md",
             scope.as_str(),

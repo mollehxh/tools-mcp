@@ -1797,10 +1797,12 @@ checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 name = "skill-store"
 version = "0.1.0"
 dependencies = [
+ "mcp-agent-authority",
  "pretty_assertions",
  "serde",
  "serde_json",
  "serde_yaml",
+ "tempfile",
  "thiserror 2.0.20",
 ]
 

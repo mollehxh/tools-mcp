@@ -56,6 +56,26 @@ const PINNED_SOURCE_DIGESTS: &[(&str, &str)] = &[
         "89bf58eb2bd97c47bcefcdc605914bc5b3b023e30a8504fa93e2040ae1913b57",
     ),
     (
+        "codex-rs/ext/skills/src/tools/list.rs",
+        "7f97d4d3100bde9f87830c2a509de7b27a4e3fc5f6d467470a086b9891921ba6",
+    ),
+    (
+        "codex-rs/ext/skills/src/tools/read.rs",
+        "3cb8740d1fd488c8e250519dfb144edebc3859b771e4eb7d6534bc1091b7bcb4",
+    ),
+    (
+        "codex-rs/ext/skills/src/tools/mod.rs",
+        "19c23eea80ef629b89d2b34e8e88d3be509da8c8c9cd9ab542a1b94eb2759c18",
+    ),
+    (
+        "codex-rs/ext/skills/src/host_roots.rs",
+        "f58c09c351973555b845539bec13a2c3f82b2d4b8fb12cb3ab7ce729e7d30c86",
+    ),
+    (
+        "codex-rs/ext/skills/src/loader/host_merge.rs",
+        "4aca969a6704a050c9b8feb2add89ba1c7cc57676e9bf94bea850cdd51a36100",
+    ),
+    (
         "normalized-contracts/tool-contracts-v1",
         "cb2253251f7ac4ec02263f7050118d500b4c8603a07e9b871f64ca963df508bf",
     ),

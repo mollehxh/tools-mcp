@@ -114,6 +114,76 @@ status = "adapter"
 requirements = ["R7", "R9", "R16", "R17"]
 provenance_exemption = "legacy boundary predates source-level adapter provenance"
 
+[[boundaries]]
+symbol = "crate::catalog::SkillCatalog"
+local_path = "crates/skill-store/src/catalog.rs"
+status = "adapter"
+requirements = ["R2", "R3", "R7", "R8", "R9", "R15", "R16", "R17"]
+local_sha256 = "4c238eb2f4016ea838544e5d29bc0f57b8f850b7140a45cef7d8a9f1b35a603c"
+
+[[boundaries.sources]]
+upstream_path = "codex-rs/ext/skills/src/tools/list.rs"
+source_sha256 = "7f97d4d3100bde9f87830c2a509de7b27a4e3fc5f6d467470a086b9891921ba6"
+license = "Apache-2.0"
+
+[[boundaries]]
+symbol = "crate::cursor"
+local_path = "crates/skill-store/src/cursor.rs"
+status = "adapter"
+requirements = ["R3", "R7", "R8", "R9", "R16", "R17"]
+local_sha256 = "65c4d5f94ee5a107bba6b70181460bd098b34714f8acaa5bd15acac542c6f826"
+
+[[boundaries.sources]]
+upstream_path = "codex-rs/ext/skills/src/tools/mod.rs"
+source_sha256 = "19c23eea80ef629b89d2b34e8e88d3be509da8c8c9cd9ab542a1b94eb2759c18"
+license = "Apache-2.0"
+
+[[boundaries]]
+symbol = "crate::resource"
+local_path = "crates/skill-store/src/resource.rs"
+status = "adapter"
+requirements = ["R3", "R7", "R8", "R9", "R17"]
+local_sha256 = "5d1a11697e0e6c714717770cda19ad240af07c36e439eae7e08a2c852b9d64dc"
+
+[[boundaries.sources]]
+upstream_path = "codex-rs/ext/skills/src/tools/read.rs"
+source_sha256 = "3cb8740d1fd488c8e250519dfb144edebc3859b771e4eb7d6534bc1091b7bcb4"
+license = "Apache-2.0"
+
+[[boundaries.sources]]
+upstream_path = "codex-rs/ext/skills/src/tools/mod.rs"
+source_sha256 = "19c23eea80ef629b89d2b34e8e88d3be509da8c8c9cd9ab542a1b94eb2759c18"
+license = "Apache-2.0"
+
+[[boundaries]]
+symbol = "crate::roots"
+local_path = "crates/skill-store/src/roots.rs"
+status = "adapter"
+requirements = ["R7", "R8", "R9", "R15", "R16", "R17"]
+local_sha256 = "a4c1840a98158b083c58f3be623403a9f363f7ae02fb0acb60882d4b913ffd20"
+
+[[boundaries.sources]]
+upstream_path = "codex-rs/ext/skills/src/host_roots.rs"
+source_sha256 = "f58c09c351973555b845539bec13a2c3f82b2d4b8fb12cb3ab7ce729e7d30c86"
+license = "Apache-2.0"
+
+[[boundaries.sources]]
+upstream_path = "codex-rs/skills/src/parser.rs"
+source_sha256 = "f3532df1cc16f4da423b8e5c813269940c90317bcd211b6659cad449fd877e89"
+license = "Apache-2.0"
+
+[[boundaries]]
+symbol = "crate::precedence"
+local_path = "crates/skill-store/src/precedence.rs"
+status = "adapter"
+requirements = ["R7", "R8", "R9", "R15"]
+local_sha256 = "1a209854fcfe881dbbc22ec351e958a518ea9de481c783b8b80aea918266d230"
+
+[[boundaries.sources]]
+upstream_path = "codex-rs/ext/skills/src/loader/host_merge.rs"
+source_sha256 = "4aca969a6704a050c9b8feb2add89ba1c7cc57676e9bf94bea850cdd51a36100"
+license = "Apache-2.0"
+
 [[files]]
 local_path = "crates/codex-tools-runtime/src/upstream/unified_exec/head_tail_buffer.rs"
 upstream_path = "codex-rs/core/src/unified_exec/head_tail_buffer.rs"

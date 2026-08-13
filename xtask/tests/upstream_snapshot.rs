@@ -38,7 +38,12 @@ fn audit_fixture() -> tempfile::TempDir {
         "crates/codex-tools-runtime/src/patch/adapter.rs",
         "crates/codex-tools-runtime/src/patch/mod.rs",
         "crates/codex-tools-runtime/src/process/manager.rs",
+        "crates/skill-store/src/catalog.rs",
         "crates/skill-store/src/contracts.rs",
+        "crates/skill-store/src/cursor.rs",
+        "crates/skill-store/src/precedence.rs",
+        "crates/skill-store/src/resource.rs",
+        "crates/skill-store/src/roots.rs",
     ] {
         copy_file(source_root, fixture.path(), relative);
     }

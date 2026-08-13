@@ -3,7 +3,7 @@ use crate::workspace::{WorkspaceAuthority, is_protected_top_level, open_dir_comp
 use cap_primitives::fs::FollowSymlinks;
 use cap_std::fs::{Dir, OpenOptions, Permissions};
 use std::ffi::{OsStr, OsString};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -25,6 +25,29 @@ pub enum OperationError {
 #[derive(Debug)]
 pub struct ServerOperations {
     dir: Dir,
+}
+
+/// Read-only handle to a regular file opened beneath a server-managed
+/// capability. The path is resolved once with no-follow semantics before this
+/// handle is returned.
+#[derive(Debug)]
+pub struct ManagedFileReader {
+    file: cap_std::fs::File,
+}
+
+/// A root-relative directory entry. It deliberately carries no ambient path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ManagedDirEntry {
+    pub name: OsString,
+    pub kind: ManagedEntryKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagedEntryKind {
+    Directory,
+    RegularFile,
+    Symlink,
+    Other,
 }
 
 /// Handle-relative operations rooted at the immutable workspace. Every path
@@ -154,6 +177,85 @@ impl ServerOperations {
         }
         Ok(())
     }
+
+    /// Lists the immediate children of this managed root without exposing its
+    /// ambient host path. Entry type inspection does not follow symlinks.
+    pub fn read_root(&self) -> Result<Vec<ManagedDirEntry>, OperationError> {
+        let mut entries = Vec::new();
+        for entry in self.dir.entries()? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let kind = if file_type.is_symlink() {
+                ManagedEntryKind::Symlink
+            } else if file_type.is_dir() {
+                ManagedEntryKind::Directory
+            } else if file_type.is_file() {
+                ManagedEntryKind::RegularFile
+            } else {
+                ManagedEntryKind::Other
+            };
+            entries.push(ManagedDirEntry {
+                name: entry.file_name(),
+                kind,
+            });
+        }
+        Ok(entries)
+    }
+
+    /// Opens a child directory as a new capability. Every component is opened
+    /// without following links, so subsequent operations stay bound to this
+    /// exact directory even if its name is replaced in the parent.
+    pub fn open_directory(&self, path: &Path) -> Result<Self, OperationError> {
+        let components = validate_server_relative(path)?;
+        let mut current = self.dir.try_clone()?;
+        for component in &components {
+            current = open_component(&current, component)?;
+        }
+        Ok(Self { dir: current })
+    }
+
+    /// Opens a regular file for bounded or streaming reads. Every directory
+    /// component and the final file are opened without following links.
+    pub fn open_file(&self, path: &Path) -> Result<ManagedFileReader, OperationError> {
+        let components = validate_server_relative(path)?;
+        let (file_name, parents) = components.split_last().ok_or(OperationError::InvalidPath)?;
+        let mut current = self.dir.try_clone()?;
+        for component in parents {
+            current = open_component(&current, component)?;
+        }
+        let mut options = OpenOptions::new();
+        options.read(true)._cap_fs_ext_follow(FollowSymlinks::No);
+        let file = current.open_with(file_name, &options)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.is_symlink() {
+            return Err(OperationError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "path is not a regular file",
+            )));
+        }
+        Ok(ManagedFileReader { file })
+    }
+
+    /// Reads a regular file through the managed root. Every directory and the
+    /// final file are opened with no-follow semantics.
+    pub fn read_bytes(&self, path: &Path) -> Result<Vec<u8>, OperationError> {
+        let mut file = self.open_file(path)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+}
+
+impl Read for ManagedFileReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.file.read(buffer)
+    }
+}
+
+impl Seek for ManagedFileReader {
+    fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+        self.file.seek(position)
+    }
 }
 
 fn validate_relative(path: &Path) -> Result<(), OperationError> {
@@ -166,6 +268,17 @@ fn validate_relative(path: &Path) -> Result<(), OperationError> {
         }
     }
     Ok(())
+}
+
+fn validate_server_relative(path: &Path) -> Result<Vec<OsString>, OperationError> {
+    validate_relative(path)?;
+    Ok(path
+        .components()
+        .map(|component| match component {
+            Component::Normal(component) => component.to_os_string(),
+            _ => unreachable!("validate_relative accepted only normal components"),
+        })
+        .collect())
 }
 
 fn validate_workspace_relative(path: &Path) -> Result<Vec<OsString>, OperationError> {
