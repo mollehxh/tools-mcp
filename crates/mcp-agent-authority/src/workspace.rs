@@ -2,7 +2,9 @@ use crate::roots::{ManagedRoot, ManagedWriteScope};
 use cap_primitives::fs::FollowSymlinks;
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir, OpenOptions};
+use sha2::{Digest, Sha256};
 use std::ffi::OsStr;
+use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
@@ -36,6 +38,7 @@ struct AuthorityInner {
     project_skills: ManagedRoot,
     global_skills: ManagedRoot,
     staging: ManagedRoot,
+    global_staging: ManagedRoot,
 }
 
 #[derive(Clone, Debug)]
@@ -81,6 +84,12 @@ impl WorkspaceAuthority {
         if roots_overlap(&workspace, &global_skills) {
             return Err(AuthorityError::OverlappingRoots);
         }
+        let global_parent = global_skills.parent().ok_or(AuthorityError::InvalidPath)?;
+        let global_parent_dir = open_absolute_dir_no_follow(global_parent)?;
+        let global_staging_name = global_staging_name(&global_skills);
+        let global_staging =
+            open_or_create_relative_dir(&global_parent_dir, Path::new(&global_staging_name))?;
+        let global_staging_path = global_parent.join(global_staging_name);
 
         Ok(Self {
             inner: Arc::new(AuthorityInner {
@@ -97,6 +106,11 @@ impl WorkspaceAuthority {
                     global_dir,
                 ),
                 staging: ManagedRoot::new(staging_path, ManagedWriteScope::ServerStaging, staging),
+                global_staging: ManagedRoot::new(
+                    global_staging_path,
+                    ManagedWriteScope::ServerStaging,
+                    global_staging,
+                ),
             }),
         })
     }
@@ -128,9 +142,25 @@ impl WorkspaceAuthority {
         &self.inner.staging
     }
 
+    #[must_use]
+    pub fn global_staging(&self) -> &ManagedRoot {
+        &self.inner.global_staging
+    }
+
     pub(crate) fn try_clone_workspace_dir(&self) -> std::io::Result<Dir> {
         self.inner.workspace_dir.try_clone()
     }
+}
+
+fn global_staging_name(global_skills: &Path) -> String {
+    let digest = Sha256::digest(global_skills.to_string_lossy().as_bytes());
+    let suffix = digest[..8]
+        .iter()
+        .fold(String::with_capacity(16), |mut suffix, byte| {
+            write!(suffix, "{byte:02x}").expect("writing to String cannot fail");
+            suffix
+        });
+    format!(".mcp-agent-skill-staging-{suffix}")
 }
 
 fn default_global_skills() -> Result<PathBuf, AuthorityError> {

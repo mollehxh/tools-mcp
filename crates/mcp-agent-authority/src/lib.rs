@@ -8,8 +8,8 @@ pub mod sandbox;
 mod workspace;
 
 pub use operations::{
-    ManagedDirEntry, ManagedEntryKind, ManagedFileReader, OperationError, ServerOperations,
-    WorkspaceOperations,
+    ManagedDirEntry, ManagedEntryKind, ManagedFileLock, ManagedFileReader, OperationError,
+    ServerOperations, WorkspaceOperations,
 };
 pub use roots::{ManagedRoot, ManagedWriteScope};
 pub use workspace::{AuthorityError, CommandAuthority, WorkspaceAuthority};

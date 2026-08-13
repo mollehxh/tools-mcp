@@ -6,6 +6,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -33,6 +34,12 @@ pub struct ServerOperations {
 #[derive(Debug)]
 pub struct ManagedFileReader {
     file: cap_std::fs::File,
+}
+
+/// An exclusive operating-system file lock released automatically on drop.
+#[derive(Debug)]
+pub struct ManagedFileLock {
+    _file: std::fs::File,
 }
 
 /// A root-relative directory entry. It deliberately carries no ambient path.
@@ -178,6 +185,131 @@ impl ServerOperations {
         Ok(())
     }
 
+    /// Acquires a bounded, cross-process exclusive lock beneath this root.
+    pub fn acquire_exclusive_lock(
+        &self,
+        path: &Path,
+        timeout: Duration,
+    ) -> Result<ManagedFileLock, OperationError> {
+        validate_relative(path)?;
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .write(true)
+            .create(true)
+            ._cap_fs_ext_follow(FollowSymlinks::No);
+        let file = self.dir.open_with(path, &options)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.is_symlink() {
+            return Err(OperationError::InvalidPath);
+        }
+        let file = file.into_std();
+        let deadline = Instant::now() + timeout;
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(ManagedFileLock { _file: file }),
+                Err(std::fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    return Err(OperationError::Io(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "managed lock acquisition timed out",
+                    )));
+                }
+                Err(std::fs::TryLockError::Error(error)) => {
+                    return Err(OperationError::Io(error));
+                }
+            }
+        }
+    }
+
+    /// Reopens the current project-skill root and rejects ambient replacement.
+    pub fn revalidate_project_root(
+        &self,
+        authority: &WorkspaceAuthority,
+    ) -> Result<Self, OperationError> {
+        let workspace = authority.try_clone_workspace_dir()?;
+        let agents = open_component(&workspace, OsStr::new(".agents"))?;
+        let current = open_component(&agents, OsStr::new("skills"))?;
+        if !same_directory(&self.dir, &current)? {
+            return Err(OperationError::InvalidPath);
+        }
+        Ok(Self { dir: current })
+    }
+
+    /// Creates a directory and fails if the destination already exists.
+    pub fn create_directory(&self, path: &Path) -> Result<Self, OperationError> {
+        let components = validate_server_relative(path)?;
+        let (name, parents) = components.split_last().ok_or(OperationError::InvalidPath)?;
+        let mut current = self.dir.try_clone()?;
+        for component in parents {
+            current = open_component(&current, component)?;
+        }
+        current.create_dir(name)?;
+        Ok(Self {
+            dir: open_component(&current, name)?,
+        })
+    }
+
+    /// Removes an empty child directory without following links.
+    pub fn remove_directory(&self, path: &Path) -> Result<(), OperationError> {
+        let components = validate_server_relative(path)?;
+        let (name, parents) = components.split_last().ok_or(OperationError::InvalidPath)?;
+        let mut current = self.dir.try_clone()?;
+        for component in parents {
+            current = open_component(&current, component)?;
+        }
+        current.remove_dir(name)?;
+        Ok(())
+    }
+
+    /// Removes a regular child file without following links.
+    pub fn remove_file(&self, path: &Path) -> Result<(), OperationError> {
+        validate_relative(path)?;
+        let metadata = self.dir.symlink_metadata(path)?;
+        if !metadata.is_file() || metadata.is_symlink() {
+            return Err(OperationError::InvalidPath);
+        }
+        self.dir.remove_file(path)?;
+        Ok(())
+    }
+
+    /// Atomically moves a directory between two opened roots on one filesystem.
+    pub fn rename_directory_to(
+        &self,
+        source: &Path,
+        destination_root: &Self,
+        destination: &Path,
+    ) -> Result<(), OperationError> {
+        validate_relative(source)?;
+        validate_relative(destination)?;
+        self.open_directory(source)?;
+        #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
+        rustix::fs::renameat_with(
+            &self.dir,
+            source,
+            &destination_root.dir,
+            destination,
+            rustix::fs::RenameFlags::NOREPLACE,
+        )
+        .map_err(std::io::Error::from)?;
+        #[cfg(windows)]
+        self.dir
+            .rename(source, &destination_root.dir, destination)?;
+        #[cfg(not(any(
+            target_os = "linux",
+            target_os = "android",
+            target_vendor = "apple",
+            windows
+        )))]
+        return Err(OperationError::Io(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "atomic no-replace directory rename is unavailable",
+        )));
+        Ok(())
+    }
+
     /// Lists the immediate children of this managed root without exposing its
     /// ambient host path. Entry type inspection does not follow symlinks.
     pub fn read_root(&self) -> Result<Vec<ManagedDirEntry>, OperationError> {
@@ -243,6 +375,32 @@ impl ServerOperations {
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
         Ok(bytes)
+    }
+}
+
+fn same_directory(left: &Dir, right: &Dir) -> Result<bool, OperationError> {
+    let left = left.dir_metadata()?;
+    let right = right.dir_metadata()?;
+    #[cfg(unix)]
+    {
+        use cap_std::fs::MetadataExt;
+        Ok(left.dev() == right.dev() && left.ino() == right.ino())
+    }
+    #[cfg(windows)]
+    {
+        use cap_std::fs::MetadataExt;
+        Ok(left.volume_serial_number().is_some()
+            && left.volume_serial_number() == right.volume_serial_number()
+            && left.file_index().is_some()
+            && left.file_index() == right.file_index())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (left, right);
+        Err(OperationError::Io(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "directory identity checks are unavailable",
+        )))
     }
 }
 
