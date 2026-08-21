@@ -1,0 +1,30 @@
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  macos-package:
+    runs-on: macos-14
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: cargo run -p xtask -- package
+      - run: cargo run -p xtask -- inspector-smoke
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcp-agent-macos
+          path: |
+            target/release-artifacts/*.tar.gz
+            target/release-artifacts/*.tar.gz.sha256
+          if-no-files-found: error

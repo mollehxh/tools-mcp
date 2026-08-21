@@ -3,6 +3,7 @@ use anyhow::{Context, Result, bail};
 use axum::Router;
 use codex_tools_runtime::process::{OwnerId, ProcessManager};
 use mcp_agent_authority::WorkspaceAuthority;
+use mcp_agent_authority::release::verify_release;
 use mcp_agent_authority::sandbox::{PreflightReceipt, Sandbox};
 use mcp_agent_server::ApplicationContext;
 use mcp_agent_server::http::{HttpConfig, MCP_ENDPOINT, router};
@@ -29,6 +30,11 @@ pub async fn run(cli: Cli) -> Result<()> {
     let authority = WorkspaceAuthority::new(&workspace)
         .context("fixed workspace authority could not be established")?;
     let release = release_dir(&cli)?;
+    if cli.release_dir.is_none() {
+        let executable = std::env::current_exe().context("executable path is unavailable")?;
+        verify_release(&release, &executable, env!("CARGO_PKG_VERSION"))
+            .context("installed release compatibility verification failed")?;
+    }
     let sentinel = OutsideSentinel::create(authority.workspace_root())?;
     let sandbox = Sandbox::load(authority.clone(), &release)
         .context("sandbox release assets failed verification")?;

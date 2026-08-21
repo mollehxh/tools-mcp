@@ -4,6 +4,8 @@ fn main() -> anyhow::Result<()> {
     match command.as_str() {
         "upstream-verify" => xtask::upstream::verify(),
         "conformance" => xtask::conformance::run(),
+        "inspector-smoke" => xtask::inspector::run(),
+        "package" => xtask::package::run(),
         "transport-spike" => xtask::transport_spike::run(),
         "transport-spike-serve" => {
             let bind = args.next().unwrap_or_else(|| "127.0.0.1:3000".to_owned());
@@ -15,7 +17,7 @@ fn main() -> anyhow::Result<()> {
             xtask::transport_spike::serve(&bind, public_host.as_deref())
         }
         _ => anyhow::bail!(
-            "expected `upstream-verify`, `conformance`, `transport-spike`, or `transport-spike-serve`"
+            "expected `upstream-verify`, `conformance`, `package`, `inspector-smoke`, `transport-spike`, or `transport-spike-serve`"
         ),
     }
 }

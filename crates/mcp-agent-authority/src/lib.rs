@@ -3,6 +3,7 @@
 #![allow(clippy::missing_errors_doc)]
 
 mod operations;
+pub mod release;
 mod roots;
 pub mod sandbox;
 mod workspace;

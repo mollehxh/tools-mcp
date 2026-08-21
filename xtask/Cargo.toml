@@ -9,16 +9,18 @@ rust-version.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 codex-tools-runtime = { path = "../crates/codex-tools-runtime" }
+flate2.workspace = true
+mcp-agent-authority = { path = "../crates/mcp-agent-authority" }
 mcp-agent-server = { path = "../crates/mcp-agent-server" }
 rmcp.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
+tar.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 toml.workspace = true
 
 [lints]
 workspace = true
-
