@@ -47,6 +47,8 @@ fn exposure_warning_names_every_persistent_local_risk() {
         "writes across declared workspace/temp/cache/tool roots",
         "unrestricted workload networking and listener binds",
         "project/global skill installation",
+        "durable Cargo/Gradle state changes",
+        "unreviewed third-party instructions or executable content",
         "development-only",
     ] {
         assert!(warning.contains(risk), "missing risk: {risk}");

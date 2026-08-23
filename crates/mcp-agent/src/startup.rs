@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-pub const EXPOSURE_WARNING: &str = "WARNING: possession of a tunnel URL grants command execution, host reads, writes across declared workspace/temp/cache/tool roots, unrestricted workload networking and listener binds, and durable project/global skill installation. Unauthenticated tunnels are development-only.";
+pub const EXPOSURE_WARNING: &str = "WARNING: possession of a tunnel URL grants command execution, host reads, writes across declared workspace/temp/cache/tool roots, unrestricted workload networking and listener binds, durable project/global skill installation, and durable Cargo/Gradle state changes. Remote skills are unreviewed third-party instructions or executable content. Unauthenticated tunnels are development-only.";
 
 /// Constructs all long-lived capabilities, serves MCP, and shuts down in order.
 ///
