@@ -8,6 +8,8 @@ use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+// Retained for non-macOS backend compatibility. Workspace request authority
+// and the macOS workload sandbox deliberately do not special-case these names.
 pub(crate) const PROTECTED_TOP_LEVEL: [&str; 3] = [".git", ".codex", ".mcp-agent"];
 
 #[derive(Debug, thiserror::Error)]
@@ -16,8 +18,6 @@ pub enum AuthorityError {
     HomeUnavailable,
     #[error("path is outside the fixed workspace")]
     OutsideWorkspace,
-    #[error("path targets a protected authority root")]
-    ProtectedRoot,
     #[error("path contains an unsupported component")]
     InvalidPath,
     #[error("workspace and global skill roots must not overlap")]
@@ -236,9 +236,6 @@ impl CommandAuthority {
         if !canonical.starts_with(&self.inner.workspace) {
             return Err(AuthorityError::OutsideWorkspace);
         }
-        if is_protected(&self.inner.workspace, &canonical) {
-            return Err(AuthorityError::ProtectedRoot);
-        }
         Ok(canonical)
     }
 
@@ -251,9 +248,6 @@ impl CommandAuthority {
             return Err(AuthorityError::OutsideWorkspace);
         }
         verify_existing_ancestor(&self.inner.workspace, &normalized)?;
-        if is_protected(&self.inner.workspace, &normalized) {
-            return Err(AuthorityError::ProtectedRoot);
-        }
         Ok(normalized)
     }
 
@@ -387,38 +381,13 @@ fn verify_existing_ancestor(workspace: &Path, path: &Path) -> Result<(), Authori
     }
 }
 
-fn is_protected(workspace: &Path, path: &Path) -> bool {
-    let Ok(relative) = path.strip_prefix(workspace) else {
-        return false;
-    };
-    relative
-        .components()
-        .find_map(|component| match component {
-            Component::Normal(part) => Some(part),
-            _ => None,
-        })
-        .is_some_and(is_protected_top_level)
-}
-
-pub(crate) fn is_protected_top_level(component: &OsStr) -> bool {
-    let Some(component) = component.to_str() else {
-        return false;
-    };
-    #[cfg(windows)]
-    let component = component.trim_end_matches(['.', ' ']);
-
-    PROTECTED_TOP_LEVEL
-        .iter()
-        .any(|name| component.eq_ignore_ascii_case(name))
-}
-
 fn roots_overlap(left: &Path, right: &Path) -> bool {
     left.starts_with(right) || right.starts_with(left)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthorityError, configured_global_skills, is_protected_top_level, roots_overlap};
+    use super::{AuthorityError, configured_global_skills, roots_overlap};
     use std::ffi::OsString;
     use std::path::PathBuf;
 
@@ -447,27 +416,6 @@ mod tests {
         })
         .unwrap();
         assert_eq!(global, PathBuf::from("/tmp/configured-codex/skills"));
-    }
-
-    #[test]
-    fn protected_roots_are_ascii_case_insensitive() {
-        assert!(is_protected_top_level(OsString::from(".GIT").as_os_str()));
-        assert!(is_protected_top_level(OsString::from(".CoDeX").as_os_str()));
-        assert!(is_protected_top_level(
-            OsString::from(".MCP-AGENT").as_os_str()
-        ));
-        assert!(!is_protected_top_level(
-            OsString::from(".git-data").as_os_str()
-        ));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn protected_roots_reject_windows_trailing_dot_and_space_aliases() {
-        assert!(is_protected_top_level(OsString::from(".git. ").as_os_str()));
-        assert!(is_protected_top_level(
-            OsString::from(".CODEX...").as_os_str()
-        ));
     }
 
     #[test]

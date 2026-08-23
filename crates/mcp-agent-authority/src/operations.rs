@@ -1,5 +1,5 @@
 use crate::roots::ManagedRoot;
-use crate::workspace::{WorkspaceAuthority, is_protected_top_level, open_dir_component_no_follow};
+use crate::workspace::{WorkspaceAuthority, open_dir_component_no_follow};
 use cap_primitives::fs::FollowSymlinks;
 use cap_std::fs::{Dir, OpenOptions, Permissions};
 use std::ffi::{OsStr, OsString};
@@ -14,8 +14,6 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 pub enum OperationError {
     #[error("workspace path must be relative and traversal-free")]
     InvalidPath,
-    #[error("path targets a protected authority root")]
-    ProtectedRoot,
     #[error("managed filesystem operation failed: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -449,12 +447,6 @@ fn validate_workspace_relative(path: &Path) -> Result<Vec<OsString>, OperationEr
             return Err(OperationError::InvalidPath);
         };
         components.push(component.to_os_string());
-    }
-    if components
-        .first()
-        .is_some_and(|component| is_protected_top_level(component))
-    {
-        return Err(OperationError::ProtectedRoot);
     }
     Ok(components)
 }

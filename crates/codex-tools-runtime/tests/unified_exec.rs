@@ -19,22 +19,18 @@ impl RuntimeFixture {
         let root = tempfile::tempdir().unwrap();
         let workspace = root.path().join("workspace");
         let global = root.path().join("global-skills");
-        let outside = root.path().join("outside");
         let release = root.path().join("release");
         fs::create_dir_all(&workspace).unwrap();
         fs::create_dir_all(&global).unwrap();
-        fs::create_dir_all(&outside).unwrap();
         fs::create_dir_all(&release).unwrap();
         let authority =
             WorkspaceAuthority::with_global_skills(&workspace, global.canonicalize().unwrap())
                 .unwrap();
         let manifest = expected_manifest().unwrap();
         manifest.write_release_relative(&release).unwrap();
-        let sentinel = outside.join("sentinel");
-        fs::write(&sentinel, b"host-readable").unwrap();
         let sandbox = Sandbox::load(authority, &release)
             .unwrap()
-            .preflight(&sentinel)
+            .preflight()
             .unwrap()
             .0;
         Self {
@@ -51,12 +47,11 @@ impl RuntimeFixture {
     fn with_capabilities() -> (Self, Arc<CapabilitySnapshot>) {
         let root = tempfile::tempdir().unwrap();
         let workspace = root.path().join("workspace");
-        let outside = root.path().join("outside");
         let release = root.path().join("release");
         let system_skills = release.join("system-skills");
         let home = root.path().join("home");
         let tmp = root.path().join("tmp");
-        for path in [&workspace, &outside, &system_skills, &home, &tmp] {
+        for path in [&workspace, &system_skills, &home, &tmp] {
             fs::create_dir_all(path).unwrap();
         }
         let environment = BTreeMap::<String, OsString>::from([
@@ -88,11 +83,9 @@ impl RuntimeFixture {
         let authority = WorkspaceAuthority::from_capabilities(Arc::clone(&capabilities)).unwrap();
         let manifest = expected_manifest().unwrap();
         manifest.write_release_relative(&release).unwrap();
-        let sentinel = outside.join("sentinel");
-        fs::write(&sentinel, b"host-readable").unwrap();
         let sandbox = Sandbox::load(authority, &release)
             .unwrap()
-            .preflight(&sentinel)
+            .preflight()
             .unwrap()
             .0;
         (

@@ -10,8 +10,8 @@ pub(super) fn artifact_marker() -> Vec<u8> {
 }
 
 // Derived from the pinned Codex Seatbelt policy shape: deny by default, permit
-// host reads/process/network, and grant writes only under one fixed root while
-// excluding metadata and server-owned state both as literals and subpaths.
+// host reads/process/network, and grant writes only beneath startup-canonical
+// capability roots. The marker is expanded into one `require-any` expression.
 pub(super) const POLICY: &str = r#"(version 1)
 (deny default)
 (import "system.sb")
@@ -24,17 +24,28 @@ pub(super) const POLICY: &str = r#"(version 1)
 (allow network-inbound)
 (allow system-socket)
 (allow file-write*
-  (require-all
-    (subpath (param "WORKSPACE"))
-    (require-not (literal (param "PROTECTED_GIT")))
-    (require-not (subpath (param "PROTECTED_GIT")))
-    (require-not (literal (param "PROTECTED_CODEX")))
-    (require-not (subpath (param "PROTECTED_CODEX")))
-    (require-not (literal (param "PROTECTED_AGENT")))
-    (require-not (subpath (param "PROTECTED_AGENT")))
-    (require-not (literal (param "PROTECTED_STAGING")))
-    (require-not (subpath (param "PROTECTED_STAGING")))))
+  ;; WRITABLE_ROOT_RULES
+)
 "#;
+
+pub(super) fn render_policy(sandbox: &Sandbox) -> Result<String, SandboxError> {
+    let roots = sandbox.authority.capabilities().map_or_else(
+        || vec![sandbox.authority.workspace_root().to_path_buf()],
+        |capabilities| capabilities.writable_roots().to_vec(),
+    );
+    if roots.is_empty() {
+        return Err(SandboxError::Preflight(
+            "sandbox has no writable capability roots".to_owned(),
+        ));
+    }
+    let rules = roots
+        .iter()
+        .enumerate()
+        .map(|(index, _)| format!("    (subpath (param \"WRITABLE_ROOT_{index}\"))"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(POLICY.replace(";; WRITABLE_ROOT_RULES", &format!("(require-any\n{rules})")))
+}
 
 #[allow(clippy::unnecessary_wraps)]
 pub(super) fn command(
@@ -44,33 +55,18 @@ pub(super) fn command(
     args: &[&str],
     cwd: &Path,
 ) -> Result<Command, SandboxError> {
-    let workspace = sandbox.authority.workspace_root();
-    let protected_agent = workspace.join(".mcp-agent");
+    let policy = render_policy(sandbox)?;
+    let roots = sandbox.authority.capabilities().map_or_else(
+        || vec![sandbox.authority.workspace_root().to_path_buf()],
+        |capabilities| capabilities.writable_roots().to_vec(),
+    );
     let mut command = Command::new(launcher);
-    command
-        .arg("-p")
-        .arg(POLICY)
-        .arg("-D")
-        .arg(format!("WORKSPACE={}", workspace.display()))
-        .arg("-D")
-        .arg(format!(
-            "PROTECTED_GIT={}",
-            workspace.join(".git").display()
-        ))
-        .arg("-D")
-        .arg(format!(
-            "PROTECTED_CODEX={}",
-            workspace.join(".codex").display()
-        ))
-        .arg("-D")
-        .arg(format!("PROTECTED_AGENT={}", protected_agent.display()))
-        .arg("-D")
-        .arg(format!(
-            "PROTECTED_STAGING={}",
-            protected_agent.join("staging").display()
-        ))
-        .arg(program)
-        .args(args)
-        .current_dir(cwd);
+    command.arg("-p").arg(policy);
+    for (index, root) in roots.iter().enumerate() {
+        command
+            .arg("-D")
+            .arg(format!("WRITABLE_ROOT_{index}={}", root.display()));
+    }
+    command.arg(program).args(args).current_dir(cwd);
     Ok(command)
 }

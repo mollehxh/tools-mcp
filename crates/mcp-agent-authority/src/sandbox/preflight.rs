@@ -1,8 +1,11 @@
-use super::{Sandbox, SandboxError};
+use super::{Sandbox, SandboxError, digest};
 use std::fs;
 use std::io::Write;
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::process::Child;
+#[cfg(unix)]
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -13,42 +16,86 @@ static PROBE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 pub struct PreflightReceipt {
     pub outside_read_allowed: bool,
     pub local_service_allowed: bool,
+    pub listener_bind_allowed: bool,
     pub workspace_write_allowed: bool,
+    pub writable_roots_checked: usize,
+    pub descendant_write_allowed: bool,
     pub outside_write_denied: bool,
+    pub release_canary_verified: bool,
 }
 
-pub(super) fn run(
-    sandbox: &Sandbox,
-    outside_sentinel: &Path,
-) -> Result<PreflightReceipt, SandboxError> {
-    let original = fs::read(outside_sentinel)?;
-    let read = platform_read(sandbox, outside_sentinel)?;
-    let workspace_probe = OwnedWorkspaceProbe::reserve(sandbox.authority.workspace_root())?;
-    let workspace_write_result = platform_write(sandbox, workspace_probe.probe_path());
-    let cleanup_result = workspace_probe.cleanup();
-    let workspace_write_allowed = workspace_write_result?;
-    cleanup_result?;
-    let outside_write_succeeded = platform_write(sandbox, outside_sentinel)?;
-    let outside_unchanged = fs::read(outside_sentinel)? == original;
-    if !outside_unchanged {
-        fs::write(outside_sentinel, &original)?;
+pub(super) fn run(sandbox: &Sandbox) -> Result<PreflightReceipt, SandboxError> {
+    let roots = sandbox.authority.capabilities().map_or_else(
+        || vec![sandbox.authority.workspace_root().to_path_buf()],
+        |capabilities| capabilities.writable_roots().to_vec(),
+    );
+    if roots.is_empty() {
+        return Err(SandboxError::Preflight(
+            "sandbox has no writable capability roots".to_owned(),
+        ));
     }
+
+    let mut root_writes_allowed = true;
+    let mut descendant_write_allowed = true;
+    for root in &roots {
+        let probe = OwnedWorkspaceProbe::reserve(root)?;
+        let direct = platform_write(sandbox, probe.probe_path());
+        let descendant = platform_descendant_write(sandbox, probe.descendant_probe_path());
+        let cleanup = probe.cleanup();
+        root_writes_allowed &= direct?;
+        descendant_write_allowed &= descendant?;
+        cleanup?;
+    }
+
+    let canary = sandbox.release.join(&sandbox.manifest.policy_path);
+    if roots.iter().any(|root| canary.starts_with(root)) {
+        return Err(SandboxError::Preflight(
+            "manifest-verified release canary overlaps a writable root".to_owned(),
+        ));
+    }
+    sandbox.reverify()?;
+    let original = fs::read(&canary)?;
+    if digest(&original) != sandbox.manifest.policy_sha256 {
+        return Err(SandboxError::ArtifactReplaced);
+    }
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&canary)
+        .map_err(|error| {
+            SandboxError::Preflight(format!(
+                "server account cannot open release canary for write: {error}"
+            ))
+        })?;
+    let read = platform_read(sandbox, &canary)?;
+    let canary_write_succeeded = platform_open_for_write(sandbox, &canary)?;
+    let canary_unchanged = fs::read(&canary)? == original;
+    sandbox.reverify()?;
+
     let listener = TcpListener::bind("127.0.0.1:0")?;
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
     let connect_succeeded = platform_connect(sandbox, port)?;
     let local_service_allowed =
         connect_succeeded && accept_loopback_connection(&listener, Duration::from_secs(2))?;
+    let listener_bind_allowed = platform_listener_bind(sandbox, "0.0.0.0")?;
     let receipt = PreflightReceipt {
         outside_read_allowed: read.status.success() && read.stdout == original,
         local_service_allowed,
-        workspace_write_allowed,
-        outside_write_denied: !outside_write_succeeded && outside_unchanged,
+        listener_bind_allowed,
+        workspace_write_allowed: root_writes_allowed,
+        writable_roots_checked: roots.len(),
+        descendant_write_allowed,
+        outside_write_denied: !canary_write_succeeded && canary_unchanged,
+        release_canary_verified: canary_unchanged,
     };
     if receipt.outside_read_allowed
         && receipt.local_service_allowed
+        && receipt.listener_bind_allowed
         && receipt.workspace_write_allowed
+        && receipt.writable_roots_checked == roots.len()
+        && receipt.descendant_write_allowed
         && receipt.outside_write_denied
+        && receipt.release_canary_verified
     {
         Ok(receipt)
     } else {
@@ -84,6 +131,9 @@ struct OwnedWorkspaceProbe {
     directory: PathBuf,
     marker: PathBuf,
     probe: PathBuf,
+    descendant_directory: PathBuf,
+    grandchild_directory: PathBuf,
+    descendant_probe: PathBuf,
     token: Vec<u8>,
 }
 
@@ -113,6 +163,9 @@ impl OwnedWorkspaceProbe {
             }
             return Ok(Self {
                 probe: directory.join("workspace-write"),
+                descendant_directory: directory.join("child"),
+                grandchild_directory: directory.join("child/grandchild"),
+                descendant_probe: directory.join("child/grandchild/descendant-write"),
                 directory,
                 marker,
                 token: token.into_bytes(),
@@ -127,12 +180,21 @@ impl OwnedWorkspaceProbe {
         &self.probe
     }
 
+    fn descendant_probe_path(&self) -> &Path {
+        &self.descendant_probe
+    }
+
     fn cleanup(self) -> Result<(), SandboxError> {
         if fs::read(&self.marker).ok().as_deref() != Some(self.token.as_slice()) {
             return Ok(());
         }
         if fs::read(&self.probe).ok().as_deref() == Some(b"probe") {
             fs::remove_file(&self.probe)?;
+        }
+        if fs::read(&self.descendant_probe).ok().as_deref() == Some(b"probe") {
+            fs::remove_file(&self.descendant_probe)?;
+            fs::remove_dir(&self.grandchild_directory)?;
+            fs::remove_dir(&self.descendant_directory)?;
         }
         fs::remove_file(&self.marker)?;
         match fs::remove_dir(&self.directory) {
@@ -178,6 +240,50 @@ fn platform_write(sandbox: &Sandbox, path: &Path) -> Result<bool, SandboxError> 
         .success())
 }
 
+#[cfg(unix)]
+fn platform_descendant_write(sandbox: &Sandbox, path: &Path) -> Result<bool, SandboxError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| SandboxError::Preflight("descendant probe has no parent".to_owned()))?;
+    let inner = format!(
+        "mkdir -p {} && printf probe > {}",
+        shell_quote(parent),
+        shell_quote(path)
+    );
+    let script = format!("/bin/sh -c {}", shell_quote_text(&inner));
+    Ok(sandbox
+        .command_unverified("/bin/sh", &["-c", &script], Path::new("."))?
+        .status()?
+        .success())
+}
+
+#[cfg(windows)]
+fn platform_descendant_write(sandbox: &Sandbox, path: &Path) -> Result<bool, SandboxError> {
+    platform_write(sandbox, path)
+}
+
+#[cfg(unix)]
+fn platform_open_for_write(sandbox: &Sandbox, path: &Path) -> Result<bool, SandboxError> {
+    let script = format!(": >> {}", shell_quote(path));
+    quiet_status(sandbox, "/bin/sh", &["-c", &script])
+}
+
+#[cfg(windows)]
+fn platform_open_for_write(sandbox: &Sandbox, path: &Path) -> Result<bool, SandboxError> {
+    let script = format!(
+        "$f=[System.IO.File]::Open('{}','Open','Write');$f.Close()",
+        path.display()
+    );
+    Ok(sandbox
+        .command_unverified(
+            "powershell.exe",
+            &["-NoProfile", "-NonInteractive", "-Command", &script],
+            Path::new("."),
+        )?
+        .status()?
+        .success())
+}
+
 #[cfg(windows)]
 fn platform_write(sandbox: &Sandbox, path: &Path) -> Result<bool, SandboxError> {
     let script = format!(">\"{}\" echo probe", path.display());
@@ -192,15 +298,87 @@ fn platform_connect(sandbox: &Sandbox, port: u16) -> Result<bool, SandboxError> 
     let port = port.to_string();
     for executable in ["/usr/bin/nc", "/bin/nc"] {
         if Path::new(executable).is_file() {
-            return Ok(sandbox
-                .command_unverified(executable, &["-z", "127.0.0.1", &port], Path::new("."))?
-                .status()?
-                .success());
+            return quiet_status(sandbox, executable, &["-z", "127.0.0.1", &port]);
         }
     }
     Err(SandboxError::Preflight(
         "no fixed local-service probe executable is installed".to_owned(),
     ))
+}
+
+#[cfg(unix)]
+fn platform_listener_bind(sandbox: &Sandbox, address: &str) -> Result<bool, SandboxError> {
+    let reservation = TcpListener::bind(("127.0.0.1", 0))?;
+    let port = reservation.local_addr()?.port();
+    drop(reservation);
+    let port_text = port.to_string();
+    let mut child = None;
+    for executable in ["/usr/bin/nc", "/bin/nc"] {
+        if Path::new(executable).is_file() {
+            let mut command = sandbox
+                .command_unverified(executable, &["-l", address, &port_text], Path::new("."))?
+                .into_std_command()?;
+            command
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            child = Some(command.spawn()?);
+            break;
+        }
+    }
+    let mut child = child.ok_or_else(|| {
+        SandboxError::Preflight("no fixed listener probe executable is installed".to_owned())
+    })?;
+    let connected = connect_to_child_listener(&mut child, port, Duration::from_secs(2))?;
+    terminate_probe_child(&mut child);
+    Ok(connected)
+}
+
+#[cfg(windows)]
+fn platform_listener_bind(sandbox: &Sandbox, _address: &str) -> Result<bool, SandboxError> {
+    let script = "$l=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Any,0);$l.Start();$l.Stop()";
+    Ok(sandbox
+        .command_unverified(
+            "powershell.exe",
+            &["-NoProfile", "-NonInteractive", "-Command", script],
+            Path::new("."),
+        )?
+        .status()?
+        .success())
+}
+
+fn connect_to_child_listener(
+    child: &mut Child,
+    port: u16,
+    timeout: Duration,
+) -> Result<bool, SandboxError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            return Ok(true);
+        }
+        if child.try_wait()?.is_some() || Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn terminate_probe_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(unix)]
+fn quiet_status(sandbox: &Sandbox, program: &str, args: &[&str]) -> Result<bool, SandboxError> {
+    let mut command = sandbox
+        .command_unverified(program, args, Path::new("."))?
+        .into_std_command()?;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    Ok(command.status()?.success())
 }
 
 #[cfg(windows)]
@@ -218,7 +396,12 @@ fn platform_connect(sandbox: &Sandbox, port: u16) -> Result<bool, SandboxError> 
 
 #[cfg(unix)]
 fn shell_quote(path: &Path) -> String {
-    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+    shell_quote_text(&path.to_string_lossy())
+}
+
+#[cfg(unix)]
+fn shell_quote_text(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
 }
 
 #[cfg(test)]

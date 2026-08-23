@@ -9,6 +9,8 @@ mod windows;
 use crate::{AuthorityError, CapabilitySnapshot, WorkspaceAuthority};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::ffi::{OsStr, OsString};
+use std::fmt::Write as _;
 use std::fs;
 use std::fs::File;
 use std::io::Read;
@@ -31,6 +33,11 @@ const MANIFEST_FILE: &str = "sandbox-manifest.json";
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 const MAX_POLICY_BYTES: u64 = 1024 * 1024;
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
+#[doc(hidden)]
+pub const INTERNAL_SANDBOX_CHILD_FLAG: &str = "--__mcp-agent-sandbox-child";
+const INTERNAL_SANDBOX_DELIMITER: &str = "--";
+const INTERNAL_SANDBOX_TOKEN_ENV: &str = "MCP_AGENT_INTERNAL_SANDBOX_TOKEN";
+const INTERNAL_SANDBOX_GUARD_ENV: &str = "MCP_AGENT_INTERNAL_SANDBOX_ACTIVE";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -64,6 +71,8 @@ pub enum SandboxError {
     Io(#[from] std::io::Error),
     #[error("sandbox preflight failed: {0}")]
     Preflight(String),
+    #[error("sandbox child adapter rejected launch: {0}")]
+    ChildAdapter(String),
 }
 
 #[derive(Clone, Debug)]
@@ -73,6 +82,8 @@ pub struct Sandbox {
     manifest: SandboxManifest,
     manifest_sha256: String,
     backend: Arc<VerifiedBackend>,
+    reexec: Option<Arc<VerifiedBackend>>,
+    reexec_token: Option<Arc<str>>,
 }
 
 /// A sandbox that has passed the native read/write/network startup proof.
@@ -191,19 +202,42 @@ impl Sandbox {
             manifest,
             manifest_sha256: digest(&bytes),
             backend,
+            reexec: None,
+            reexec_token: None,
         })
+    }
+
+    /// Loads the sandbox and pins the already-verified server executable as
+    /// the only adapter through which workload children may be launched.
+    #[doc(hidden)]
+    pub fn load_with_reexec(
+        authority: WorkspaceAuthority,
+        release: &Path,
+        executable: &Path,
+    ) -> Result<Self, SandboxError> {
+        let mut sandbox = Self::load(authority, release)?;
+        let executable = executable.canonicalize()?;
+        let file = open_verified_file(&executable, true)?;
+        let identity = FileIdentity::from_metadata(&file.metadata()?);
+        sandbox.reexec = Some(Arc::new(VerifiedBackend {
+            file,
+            path: executable,
+            identity,
+        }));
+        sandbox.reexec_token = Some(Arc::from(random_reexec_token()?));
+        Ok(sandbox)
     }
 
     pub fn render_native_policy(&self) -> Result<String, SandboxError> {
         self.reverify()?;
+        #[cfg(target_os = "macos")]
+        return macos::render_policy(self);
+        #[cfg(not(target_os = "macos"))]
         Ok(String::from_utf8_lossy(native_policy_bytes()).into_owned())
     }
 
-    pub fn preflight(
-        self,
-        outside_sentinel: &Path,
-    ) -> Result<(VerifiedSandbox, PreflightReceipt), SandboxError> {
-        let receipt = preflight::run(&self, outside_sentinel)?;
+    pub fn preflight(self) -> Result<(VerifiedSandbox, PreflightReceipt), SandboxError> {
+        let receipt = preflight::run(&self)?;
         let verified = VerifiedSandbox {
             sandbox: self,
             receipt: receipt.clone(),
@@ -240,7 +274,17 @@ impl Sandbox {
     ) -> Result<Command, SandboxError> {
         self.reverify()?;
         let args = args.iter().map(String::as_str).collect::<Vec<_>>();
-        platform_command(self, &self.backend.launch_path(), program, &args, cwd)
+        let command = platform_command(self, &self.backend.launch_path(), program, &args, cwd)?;
+        match (&self.reexec, &self.reexec_token) {
+            (Some(adapter), Some(token)) => {
+                adapter.reverify()?;
+                Ok(wrap_with_reexec(&command, &adapter.path, token))
+            }
+            (None, None) => Ok(command),
+            _ => Err(SandboxError::ChildAdapter(
+                "incomplete reexec authority".to_owned(),
+            )),
+        }
     }
 
     fn command_unverified(
@@ -257,6 +301,147 @@ impl Sandbox {
             cwd,
         })
     }
+}
+
+/// Dispatches the hidden authenticated sandbox adapter before ordinary CLI
+/// parsing. A successful dispatch replaces the process image and never
+/// returns. Direct, malformed, or recursive selection fails closed.
+#[doc(hidden)]
+pub fn dispatch_internal_sandbox_child() -> Result<bool, SandboxError> {
+    let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if arguments
+        .first()
+        .is_none_or(|value| value != INTERNAL_SANDBOX_CHILD_FLAG)
+    {
+        return Ok(false);
+    }
+    let token = std::env::var_os(INTERNAL_SANDBOX_TOKEN_ENV);
+    let guarded = std::env::var_os(INTERNAL_SANDBOX_GUARD_ENV).is_some();
+    let launch = parse_internal_sandbox_child(&arguments, token.as_deref(), guarded)?;
+    let verified = open_verified_backend(Path::new("."))?;
+    if launch.program != verified.path {
+        return Err(SandboxError::ChildAdapter(
+            "sandbox launcher is not the verified native backend".to_owned(),
+        ));
+    }
+    close_inherited_descriptors()?;
+
+    let mut command = Command::new(&launch.program);
+    command
+        .args(&launch.args)
+        .env_remove(INTERNAL_SANDBOX_TOKEN_ENV)
+        .env(INTERNAL_SANDBOX_GUARD_ENV, "1");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let error = command.exec();
+        Err(SandboxError::Io(error))
+    }
+    #[cfg(not(unix))]
+    {
+        let status = command.status()?;
+        Err(SandboxError::ChildAdapter(format!(
+            "native sandbox launcher returned {status}"
+        )))
+    }
+}
+
+struct InternalSandboxLaunch {
+    program: PathBuf,
+    args: Vec<OsString>,
+}
+
+fn parse_internal_sandbox_child(
+    arguments: &[OsString],
+    token_environment: Option<&OsStr>,
+    guarded: bool,
+) -> Result<InternalSandboxLaunch, SandboxError> {
+    if guarded {
+        return Err(SandboxError::ChildAdapter(
+            "recursive sandbox adapter selection".to_owned(),
+        ));
+    }
+    if arguments.len() < 5
+        || arguments[0] != INTERNAL_SANDBOX_CHILD_FLAG
+        || arguments[2] != INTERNAL_SANDBOX_DELIMITER
+        || token_environment != Some(arguments[1].as_os_str())
+        || arguments[1].is_empty()
+    {
+        return Err(SandboxError::ChildAdapter(
+            "malformed or unauthenticated adapter arguments".to_owned(),
+        ));
+    }
+    let program = PathBuf::from(&arguments[3]);
+    if program != Path::new("/usr/bin/sandbox-exec") || arguments[4] != "-p" {
+        return Err(SandboxError::ChildAdapter(
+            "unsandboxed launcher selection is forbidden".to_owned(),
+        ));
+    }
+    Ok(InternalSandboxLaunch {
+        program,
+        args: arguments[4..].to_vec(),
+    })
+}
+
+fn wrap_with_reexec(command: &Command, adapter: &Path, token: &str) -> Command {
+    let mut wrapped = Command::new(adapter);
+    wrapped
+        .arg(INTERNAL_SANDBOX_CHILD_FLAG)
+        .arg(token)
+        .arg(INTERNAL_SANDBOX_DELIMITER)
+        .arg(command.get_program())
+        .args(command.get_args())
+        .env(INTERNAL_SANDBOX_TOKEN_ENV, token)
+        .env_remove(INTERNAL_SANDBOX_GUARD_ENV);
+    if let Some(cwd) = command.get_current_dir() {
+        wrapped.current_dir(cwd);
+    }
+    for (key, value) in command.get_envs() {
+        match value {
+            Some(value) => {
+                wrapped.env(key, value);
+            }
+            None => {
+                wrapped.env_remove(key);
+            }
+        }
+    }
+    wrapped
+}
+
+fn random_reexec_token() -> Result<String, SandboxError> {
+    #[cfg(unix)]
+    {
+        let mut bytes = [0_u8; 32];
+        File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+        let mut token = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            write!(token, "{byte:02x}").expect("writing to a String cannot fail");
+        }
+        Ok(token)
+    }
+    #[cfg(not(unix))]
+    {
+        let seed = format!("{}:{:?}", std::process::id(), std::time::SystemTime::now());
+        Ok(digest(seed.as_bytes()))
+    }
+}
+
+#[cfg(unix)]
+fn close_inherited_descriptors() -> Result<(), SandboxError> {
+    let (maximum, _) =
+        nix::sys::resource::getrlimit(nix::sys::resource::Resource::RLIMIT_NOFILE)
+            .map_err(|error| SandboxError::Io(std::io::Error::from_raw_os_error(error as i32)))?;
+    let maximum = std::os::fd::RawFd::try_from(maximum).unwrap_or(std::os::fd::RawFd::MAX);
+    for descriptor in 3..maximum {
+        let _ = nix::unistd::close(descriptor);
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn close_inherited_descriptors() -> Result<(), SandboxError> {
+    Ok(())
 }
 
 impl VerifiedSandbox {
@@ -548,4 +733,62 @@ fn reject_symlink_components(path: &Path) -> Result<(), SandboxError> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        INTERNAL_SANDBOX_CHILD_FLAG, INTERNAL_SANDBOX_DELIMITER, SandboxError,
+        parse_internal_sandbox_child,
+    };
+    use std::ffi::{OsStr, OsString};
+
+    fn valid_arguments() -> Vec<OsString> {
+        [
+            INTERNAL_SANDBOX_CHILD_FLAG,
+            "internal-token",
+            INTERNAL_SANDBOX_DELIMITER,
+            "/usr/bin/sandbox-exec",
+            "-p",
+            "(version 1)",
+            "/bin/true",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect()
+    }
+
+    #[test]
+    fn internal_child_requires_authenticated_delimited_sandbox_launch() {
+        let arguments = valid_arguments();
+        let launch =
+            parse_internal_sandbox_child(&arguments, Some(OsStr::new("internal-token")), false)
+                .unwrap();
+
+        assert_eq!(
+            launch.program,
+            std::path::Path::new("/usr/bin/sandbox-exec")
+        );
+        assert_eq!(launch.args.first(), Some(&OsString::from("-p")));
+    }
+
+    #[test]
+    fn internal_child_rejects_malformed_recursive_and_unsandboxed_selection() {
+        let valid = valid_arguments();
+        assert!(matches!(
+            parse_internal_sandbox_child(&valid, None, false),
+            Err(SandboxError::ChildAdapter(_))
+        ));
+        assert!(matches!(
+            parse_internal_sandbox_child(&valid, Some(OsStr::new("internal-token")), true),
+            Err(SandboxError::ChildAdapter(_))
+        ));
+
+        let mut unsandboxed = valid;
+        unsandboxed[3] = OsString::from("/bin/sh");
+        assert!(matches!(
+            parse_internal_sandbox_child(&unsandboxed, Some(OsStr::new("internal-token")), false),
+            Err(SandboxError::ChildAdapter(_))
+        ));
+    }
 }

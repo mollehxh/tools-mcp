@@ -18,9 +18,8 @@ impl RuntimeFixture {
         let root = tempfile::tempdir().unwrap();
         let workspace = root.path().join("workspace");
         let global = root.path().join("global-skills");
-        let outside = root.path().join("outside");
         let release = root.path().join("release");
-        for path in [&workspace, &global, &outside, &release] {
+        for path in [&workspace, &global, &release] {
             fs::create_dir_all(path).unwrap();
         }
         let authority =
@@ -28,11 +27,9 @@ impl RuntimeFixture {
                 .unwrap();
         let manifest = expected_manifest().unwrap();
         manifest.write_release_relative(&release).unwrap();
-        let sentinel = outside.join("sentinel");
-        fs::write(&sentinel, b"host-readable").unwrap();
         let sandbox = Sandbox::load(authority, &release)
             .unwrap()
-            .preflight(&sentinel)
+            .preflight()
             .unwrap()
             .0;
         Self {

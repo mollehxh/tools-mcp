@@ -151,7 +151,7 @@ fn cwd_rejects_relative_absolute_and_symlink_escape() {
 }
 
 #[test]
-fn managed_writes_allow_project_skills_but_protect_authority_roots() {
+fn workspace_writes_allow_project_metadata_roots() {
     let fixture = conformance::Fixture::new();
     let authority = fixture.authority();
     let command = authority.command();
@@ -163,7 +163,7 @@ fn managed_writes_allow_project_skills_but_protect_authority_roots() {
             .is_ok()
     );
 
-    for protected in [
+    for metadata in [
         ".git/config",
         ".GIT/config",
         ".codex/state.json",
@@ -172,30 +172,32 @@ fn managed_writes_allow_project_skills_but_protect_authority_roots() {
         ".MCP-AGENT/state",
         ".mcp-agent/staging/install",
     ] {
-        assert!(matches!(
-            command.authorize_write(Path::new(protected)),
-            Err(AuthorityError::ProtectedRoot)
-        ));
+        assert!(command.authorize_write(Path::new(metadata)).is_ok());
     }
 
     let operations = WorkspaceOperations::new(&authority).unwrap();
-    assert!(matches!(
-        operations.atomic_write(Path::new(".GIT/config"), b"denied"),
-        Err(OperationError::ProtectedRoot)
-    ));
+    operations
+        .atomic_write(Path::new(".GIT/config"), b"allowed")
+        .unwrap();
+    assert_eq!(
+        fs::read(fixture.workspace.join(".GIT/config")).unwrap(),
+        b"allowed"
+    );
 }
 
 #[cfg(windows)]
 #[test]
-fn windows_protected_root_aliases_are_rejected() {
+fn windows_workspace_metadata_aliases_are_allowed() {
     let fixture = conformance::Fixture::new();
     let authority = fixture.authority();
 
-    for protected in [".git./config", ".CODEX /state.json", ".mcp-agent.../state"] {
-        assert!(matches!(
-            authority.command().authorize_write(Path::new(protected)),
-            Err(AuthorityError::ProtectedRoot)
-        ));
+    for metadata in [".git./config", ".CODEX /state.json", ".mcp-agent.../state"] {
+        assert!(
+            authority
+                .command()
+                .authorize_write(Path::new(metadata))
+                .is_ok()
+        );
     }
 }
 
@@ -241,7 +243,7 @@ fn server_operations_are_handle_relative_no_follow_and_atomic() {
 }
 
 #[test]
-fn global_and_staging_capabilities_are_not_command_writable() {
+fn global_capability_is_outside_workspace_but_staging_is_workspace_writable() {
     let fixture = conformance::Fixture::new();
     let authority = fixture.authority();
     assert_eq!(
@@ -270,12 +272,12 @@ fn global_and_staging_capabilities_are_not_command_writable() {
             .authorize_write(authority.global_skills().root()),
         Err(AuthorityError::OutsideWorkspace)
     ));
-    assert!(matches!(
+    assert!(
         authority
             .command()
-            .authorize_write(authority.staging().root()),
-        Err(AuthorityError::ProtectedRoot)
-    ));
+            .authorize_write(authority.staging().root())
+            .is_ok()
+    );
 }
 
 #[test]

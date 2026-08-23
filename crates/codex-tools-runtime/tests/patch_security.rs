@@ -33,18 +33,12 @@ fn make_dir_reparse_point(target: &Path, link: &Path) {
 }
 
 #[test]
-fn rejects_absolute_traversal_and_protected_paths_before_any_change() {
+fn rejects_absolute_and_traversal_paths_before_any_change() {
     let (root, authority) = fixture();
     let outside = root.path().join("outside.txt");
     fs::write(&outside, "unchanged\n").unwrap();
 
-    for unsafe_path in [
-        outside.display().to_string(),
-        "../outside.txt".to_string(),
-        ".git/config".to_string(),
-        ".codex/state".to_string(),
-        ".mcp-agent/staging/file".to_string(),
-    ] {
+    for unsafe_path in [outside.display().to_string(), "../outside.txt".to_string()] {
         let safe = authority.workspace_root().join("must-not-exist.txt");
         let error = apply(
             &authority,
@@ -60,6 +54,54 @@ fn rejects_absolute_traversal_and_protected_paths_before_any_change() {
         assert!(!safe.exists(), "preflight failure applied an earlier hunk");
         assert_eq!(fs::read_to_string(&outside).unwrap(), "unchanged\n");
     }
+}
+
+#[test]
+fn allows_workspace_metadata_paths() {
+    let (_root, authority) = fixture();
+
+    for path in [
+        ".git/config",
+        ".codex/state",
+        ".mcp-agent/state",
+        ".agents/state",
+    ] {
+        apply_patch(
+            &authority,
+            &ApplyPatchInput {
+                patch: format!("*** Begin Patch\n*** Add File: {path}\n+allowed\n*** End Patch"),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(authority.workspace_root().join(path)).unwrap(),
+            "allowed\n"
+        );
+    }
+
+    apply_patch(
+        &authority,
+        &ApplyPatchInput {
+            patch: concat!(
+                "*** Begin Patch\n",
+                "*** Update File: .codex/state\n",
+                "*** Move to: .codex/renamed\n",
+                "@@\n",
+                "-allowed\n",
+                "+renamed\n",
+                "*** Delete File: .git/config\n",
+                "*** End Patch"
+            )
+            .to_owned(),
+        },
+    )
+    .unwrap();
+    assert!(!authority.workspace_root().join(".codex/state").exists());
+    assert_eq!(
+        fs::read_to_string(authority.workspace_root().join(".codex/renamed")).unwrap(),
+        "renamed\n"
+    );
+    assert!(!authority.workspace_root().join(".git/config").exists());
 }
 
 #[cfg(unix)]

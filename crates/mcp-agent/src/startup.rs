@@ -1,5 +1,5 @@
 use crate::cli::Cli;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use axum::Router;
 use codex_tools_runtime::process::{OwnerId, ProcessManager};
 use mcp_agent_authority::release::verify_release;
@@ -9,15 +9,12 @@ use mcp_agent_server::ApplicationContext;
 use mcp_agent_server::http::{HttpConfig, MCP_ENDPOINT, router};
 use skill_store::{SkillCatalog, SkillInstaller};
 use std::collections::hash_map::DefaultHasher;
-use std::fs::OpenOptions;
 use std::hash::{Hash, Hasher};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
 
-pub const EXPOSURE_WARNING: &str = "WARNING: possession of a tunnel URL grants command execution, host reads, workspace writes, local-service effects, and durable project/global skill installation. Unauthenticated tunnels are development-only.";
+pub const EXPOSURE_WARNING: &str = "WARNING: possession of a tunnel URL grants command execution, host reads, writes across declared workspace/temp/cache/tool roots, unrestricted workload networking and listener binds, and durable project/global skill installation. Unauthenticated tunnels are development-only.";
 
 /// Constructs all long-lived capabilities, serves MCP, and shuts down in order.
 ///
@@ -39,11 +36,18 @@ pub async fn run(cli: Cli) -> Result<()> {
     );
     let authority = WorkspaceAuthority::from_capabilities(capabilities)
         .context("fixed workspace authority could not be established")?;
-    let sentinel = OutsideSentinel::create(authority.workspace_root())?;
+    #[cfg(target_os = "macos")]
+    let sandbox = Sandbox::load_with_reexec(
+        authority.clone(),
+        &release,
+        &std::env::current_exe().context("executable path is unavailable")?,
+    )
+    .context("sandbox release assets failed verification")?;
+    #[cfg(not(target_os = "macos"))]
     let sandbox = Sandbox::load(authority.clone(), &release)
         .context("sandbox release assets failed verification")?;
     let (sandbox, receipt) = sandbox
-        .preflight(sentinel.path())
+        .preflight()
         .context("workspace-write sandbox preflight failed")?;
 
     let processes = Arc::new(ProcessManager::new(Arc::new(sandbox)));
@@ -149,51 +153,6 @@ fn print_banner(
     }
 }
 
-struct OutsideSentinel {
-    path: PathBuf,
-}
-
-impl OutsideSentinel {
-    fn create(workspace: &Path) -> Result<Self> {
-        let temp = std::env::temp_dir()
-            .canonicalize()
-            .context("system temporary directory is unavailable")?;
-        if temp.starts_with(workspace) {
-            bail!("sandbox preflight needs a temporary directory outside the workspace");
-        }
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        for sequence in 0..128_u8 {
-            let path = temp.join(format!(
-                "mcp-agent-preflight-{}-{nonce:x}-{sequence:x}",
-                std::process::id()
-            ));
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(mut file) => {
-                    file.write_all(b"outside sentinel")?;
-                    file.sync_all()?;
-                    return Ok(Self { path });
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error).context("outside sentinel could not be created"),
-            }
-        }
-        bail!("outside sentinel name space is exhausted")
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for OutsideSentinel {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
 #[cfg(all(test, unix))]
 mod tests {
     use super::serve_prepared;
@@ -296,9 +255,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let workspace = root.path().join("workspace");
         let global = root.path().join("global");
-        let outside = root.path().join("outside");
         let release = root.path().join("release");
-        for directory in [&workspace, &global, &outside, &release] {
+        for directory in [&workspace, &global, &release] {
             fs::create_dir(directory).unwrap();
         }
         let authority =
@@ -308,11 +266,9 @@ mod tests {
             .unwrap()
             .write_release_relative(&release)
             .unwrap();
-        let sentinel = outside.join("sentinel");
-        fs::write(&sentinel, b"outside").unwrap();
         let sandbox = Sandbox::load(authority.clone(), &release)
             .unwrap()
-            .preflight(&sentinel)
+            .preflight()
             .unwrap()
             .0;
         let processes = Arc::new(ProcessManager::new(Arc::new(sandbox)));
