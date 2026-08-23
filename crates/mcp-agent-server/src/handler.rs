@@ -300,6 +300,7 @@ fn process_error(error: &ProcessError) -> rmcp::model::CallToolResult {
         ProcessError::UnknownSession { .. } => "unknown_session",
         ProcessError::StdinClosed { .. } => "stdin_closed",
         ProcessError::ShuttingDown => "shutting_down",
+        ProcessError::UnsupportedShell { .. } => "unsupported_shell",
         ProcessError::Spawn(_) => "command_launch_failed",
         ProcessError::Interaction(_) => "process_interaction_failed",
     };

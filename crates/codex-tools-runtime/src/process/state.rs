@@ -39,6 +39,8 @@ pub enum ProcessError {
     StdinClosed { session_id: i32 },
     #[error("the process registry is shutting down")]
     ShuttingDown,
+    #[error("unsupported workload shell {shell}; expected sh, bash, zsh, or fish")]
+    UnsupportedShell { shell: String },
     #[error("command launch was rejected")]
     Spawn(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("process interaction failed")]

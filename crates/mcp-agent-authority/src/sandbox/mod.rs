@@ -6,7 +6,7 @@ mod preflight;
 #[allow(dead_code, clippy::unnecessary_wraps)]
 mod windows;
 
-use crate::{AuthorityError, WorkspaceAuthority};
+use crate::{AuthorityError, CapabilitySnapshot, WorkspaceAuthority};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -263,6 +263,11 @@ impl VerifiedSandbox {
     #[must_use]
     pub fn preflight_receipt(&self) -> &PreflightReceipt {
         &self.receipt
+    }
+
+    #[must_use]
+    pub fn capabilities(&self) -> Option<&Arc<CapabilitySnapshot>> {
+        self.sandbox.authority.capabilities()
     }
 
     pub fn command(

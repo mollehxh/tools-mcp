@@ -12,5 +12,5 @@ pub use operations::{
     ManagedDirEntry, ManagedEntryKind, ManagedFileLock, ManagedFileReader, OperationError,
     ServerOperations, WorkspaceOperations,
 };
-pub use roots::{ManagedRoot, ManagedWriteScope};
+pub use roots::{CapabilitySnapshot, ManagedRoot, ManagedWriteScope};
 pub use workspace::{AuthorityError, CommandAuthority, WorkspaceAuthority};

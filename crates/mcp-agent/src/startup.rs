@@ -2,9 +2,9 @@ use crate::cli::Cli;
 use anyhow::{Context, Result, bail};
 use axum::Router;
 use codex_tools_runtime::process::{OwnerId, ProcessManager};
-use mcp_agent_authority::WorkspaceAuthority;
 use mcp_agent_authority::release::verify_release;
 use mcp_agent_authority::sandbox::{PreflightReceipt, Sandbox};
+use mcp_agent_authority::{CapabilitySnapshot, WorkspaceAuthority};
 use mcp_agent_server::ApplicationContext;
 use mcp_agent_server::http::{HttpConfig, MCP_ENDPOINT, router};
 use skill_store::{SkillCatalog, SkillInstaller};
@@ -27,14 +27,18 @@ pub const EXPOSURE_WARNING: &str = "WARNING: possession of a tunnel URL grants c
 /// binding, or HTTP serving fails.
 pub async fn run(cli: Cli) -> Result<()> {
     let workspace = std::env::current_dir().context("current directory is unavailable")?;
-    let authority = WorkspaceAuthority::new(&workspace)
-        .context("fixed workspace authority could not be established")?;
     let release = release_dir(&cli)?;
     if cli.release_dir.is_none() {
         let executable = std::env::current_exe().context("executable path is unavailable")?;
         verify_release(&release, &executable, env!("CARGO_PKG_VERSION"))
             .context("installed release compatibility verification failed")?;
     }
+    let capabilities = Arc::new(
+        CapabilitySnapshot::resolve(&workspace, release.join("system-skills"))
+            .context("managed workload capabilities could not be established")?,
+    );
+    let authority = WorkspaceAuthority::from_capabilities(capabilities)
+        .context("fixed workspace authority could not be established")?;
     let sentinel = OutsideSentinel::create(authority.workspace_root())?;
     let sandbox = Sandbox::load(authority.clone(), &release)
         .context("sandbox release assets failed verification")?;

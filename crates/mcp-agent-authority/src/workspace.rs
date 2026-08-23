@@ -1,4 +1,4 @@
-use crate::roots::{ManagedRoot, ManagedWriteScope};
+use crate::roots::{CapabilitySnapshot, ManagedRoot, ManagedWriteScope};
 use cap_primitives::fs::FollowSymlinks;
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir, OpenOptions};
@@ -12,7 +12,7 @@ pub(crate) const PROTECTED_TOP_LEVEL: [&str; 3] = [".git", ".codex", ".mcp-agent
 
 #[derive(Debug, thiserror::Error)]
 pub enum AuthorityError {
-    #[error("no trustworthy per-user home directory is available for global skills")]
+    #[error("no trustworthy per-user home directory is available for CODEX_HOME")]
     HomeUnavailable,
     #[error("path is outside the fixed workspace")]
     OutsideWorkspace,
@@ -22,6 +22,10 @@ pub enum AuthorityError {
     InvalidPath,
     #[error("workspace and global skill roots must not overlap")]
     OverlappingRoots,
+    #[error("environment variable {name} must contain a non-empty absolute path")]
+    InvalidEnvironment { name: &'static str },
+    #[error("release-owned system skills overlap a writable capability root")]
+    ReleaseWritableOverlap,
     #[error("authority setup failed: {0}")]
     Setup(#[source] std::io::Error),
 }
@@ -39,6 +43,7 @@ struct AuthorityInner {
     global_skills: ManagedRoot,
     staging: ManagedRoot,
     global_staging: ManagedRoot,
+    capabilities: Option<Arc<CapabilitySnapshot>>,
 }
 
 #[derive(Clone, Debug)]
@@ -57,6 +62,22 @@ impl WorkspaceAuthority {
     pub fn with_global_skills(
         workspace: impl AsRef<Path>,
         global_skills: impl AsRef<Path>,
+    ) -> Result<Self, AuthorityError> {
+        Self::build(workspace, global_skills, None)
+    }
+
+    pub fn from_capabilities(
+        capabilities: Arc<CapabilitySnapshot>,
+    ) -> Result<Self, AuthorityError> {
+        let workspace = capabilities.workspace().to_path_buf();
+        let global_skills = capabilities.global_skills().to_path_buf();
+        Self::build(workspace, global_skills, Some(capabilities))
+    }
+
+    fn build(
+        workspace: impl AsRef<Path>,
+        global_skills: impl AsRef<Path>,
+        capabilities: Option<Arc<CapabilitySnapshot>>,
     ) -> Result<Self, AuthorityError> {
         let workspace = workspace
             .as_ref()
@@ -111,6 +132,7 @@ impl WorkspaceAuthority {
                     ManagedWriteScope::ServerStaging,
                     global_staging,
                 ),
+                capabilities,
             }),
         })
     }
@@ -147,6 +169,11 @@ impl WorkspaceAuthority {
         &self.inner.global_staging
     }
 
+    #[must_use]
+    pub fn capabilities(&self) -> Option<&Arc<CapabilitySnapshot>> {
+        self.inner.capabilities.as_ref()
+    }
+
     pub(crate) fn try_clone_workspace_dir(&self) -> std::io::Result<Dir> {
         self.inner.workspace_dir.try_clone()
     }
@@ -171,6 +198,13 @@ fn configured_global_skills<F>(lookup: F) -> Result<PathBuf, AuthorityError>
 where
     F: Fn(&str) -> Option<std::ffi::OsString>,
 {
+    if let Some(codex_home) = lookup("CODEX_HOME") {
+        let codex_home = PathBuf::from(codex_home);
+        if codex_home.as_os_str().is_empty() || !codex_home.is_absolute() {
+            return Err(AuthorityError::InvalidEnvironment { name: "CODEX_HOME" });
+        }
+        return Ok(codex_home.join("skills"));
+    }
     #[cfg(unix)]
     let home = lookup("HOME");
     #[cfg(windows)]
@@ -187,7 +221,7 @@ where
         .map(PathBuf::from)
         .filter(|home| home.is_absolute())
         .ok_or(AuthorityError::HomeUnavailable)?;
-    Ok(home.join(".agents/skills"))
+    Ok(home.join(".codex/skills"))
 }
 
 impl CommandAuthority {
@@ -398,12 +432,21 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn unix_home_selects_the_per_user_skill_root() {
+    fn unix_home_selects_the_codex_skill_root() {
         let global = configured_global_skills(|name| {
             (name == "HOME").then(|| OsString::from("/tmp/test-home"))
         })
         .unwrap();
-        assert_eq!(global, PathBuf::from("/tmp/test-home/.agents/skills"));
+        assert_eq!(global, PathBuf::from("/tmp/test-home/.codex/skills"));
+    }
+
+    #[test]
+    fn configured_codex_home_selects_the_skill_root() {
+        let global = configured_global_skills(|name| {
+            (name == "CODEX_HOME").then(|| OsString::from("/tmp/configured-codex"))
+        })
+        .unwrap();
+        assert_eq!(global, PathBuf::from("/tmp/configured-codex/skills"));
     }
 
     #[test]
@@ -446,6 +489,6 @@ mod tests {
             (name == "USERPROFILE").then(|| OsString::from(r"C:\Users\test"))
         })
         .unwrap();
-        assert_eq!(global, PathBuf::from(r"C:\Users\test\.agents\skills"));
+        assert_eq!(global, PathBuf::from(r"C:\Users\test\.codex\skills"));
     }
 }

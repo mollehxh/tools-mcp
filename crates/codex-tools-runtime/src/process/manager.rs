@@ -5,8 +5,9 @@ use crate::contracts::{ExecCommandInput, ExecCommandOutput, WriteStdinInput};
 use crate::upstream_head_tail_buffer::HeadTailBuffer;
 use mcp_agent_authority::sandbox::VerifiedSandbox;
 use rand::Rng;
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashMap};
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -72,11 +73,125 @@ struct Tombstone {
     expires_at: Instant,
 }
 
+#[cfg(not(windows))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ShellDialect {
+    Posix,
+    Fish,
+}
+
+#[cfg(not(windows))]
+fn shell_dialect(shell: &str) -> Result<ShellDialect, ProcessError> {
+    match Path::new(shell).file_name().and_then(OsStr::to_str) {
+        Some("sh" | "bash" | "zsh") => Ok(ShellDialect::Posix),
+        Some("fish") => Ok(ShellDialect::Fish),
+        _ => Err(ProcessError::UnsupportedShell {
+            shell: shell.to_owned(),
+        }),
+    }
+}
+
+#[cfg(not(windows))]
+fn command_with_fixed_environment(
+    dialect: ShellDialect,
+    environment: &BTreeMap<String, OsString>,
+    command: &str,
+) -> Result<String, ProcessError> {
+    let mut prologue = String::new();
+    for (name, value) in environment {
+        let value = value
+            .to_str()
+            .ok_or_else(|| ProcessError::UnsupportedShell {
+                shell: "non-UTF-8 workload environment".to_owned(),
+            })?;
+        match dialect {
+            ShellDialect::Posix => {
+                let quoted = value.replace('\'', "'\\''");
+                prologue.push_str("export ");
+                prologue.push_str(name);
+                prologue.push_str("='");
+                prologue.push_str(&quoted);
+                prologue.push_str("';");
+            }
+            ShellDialect::Fish => {
+                let quoted = value.replace('\\', "\\\\").replace('\'', "\\'");
+                prologue.push_str("set -gx ");
+                prologue.push_str(name);
+                prologue.push_str(" '");
+                prologue.push_str(&quoted);
+                prologue.push_str("';");
+            }
+        }
+    }
+    prologue.push(' ');
+    prologue.push_str(command);
+    Ok(prologue)
+}
+
 fn lock_registry(inner: &Inner) -> MutexGuard<'_, Registry> {
     inner
         .registry
         .lock()
         .expect("process registry mutex poisoned")
+}
+
+#[cfg(all(test, not(windows)))]
+mod fixed_environment_tests {
+    use super::{ShellDialect, command_with_fixed_environment, shell_dialect};
+    use std::collections::BTreeMap;
+    use std::ffi::OsString;
+
+    fn environment() -> BTreeMap<String, OsString> {
+        BTreeMap::from([
+            ("CODEX_HOME".to_owned(), OsString::from("/tmp/codex home's")),
+            ("TMPDIR".to_owned(), OsString::from("/tmp/fixed")),
+        ])
+    }
+
+    #[test]
+    fn supported_shells_receive_dialect_safe_post_startup_prologues() {
+        for shell in ["/bin/sh", "/bin/bash", "/bin/zsh"] {
+            let dialect = shell_dialect(shell).unwrap();
+            assert_eq!(dialect, ShellDialect::Posix);
+            let command =
+                command_with_fixed_environment(dialect, &environment(), "printf ok").unwrap();
+            assert!(command.starts_with("export CODEX_HOME='/tmp/codex home'\\''s';"));
+            assert!(command.ends_with("printf ok"));
+        }
+
+        let dialect = shell_dialect("/opt/homebrew/bin/fish").unwrap();
+        assert_eq!(dialect, ShellDialect::Fish);
+        let command = command_with_fixed_environment(dialect, &environment(), "printf ok").unwrap();
+        assert!(command.starts_with("set -gx CODEX_HOME '/tmp/codex home\\'s';"));
+        assert!(command.ends_with("printf ok"));
+    }
+
+    #[test]
+    fn posix_prologue_reasserts_inherited_values_before_the_workload() {
+        let command = command_with_fixed_environment(
+            ShellDialect::Posix,
+            &environment(),
+            "printf '%s|%s' \"$CODEX_HOME\" \"$TMPDIR\"",
+        )
+        .unwrap();
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", &command])
+            .env("CODEX_HOME", "/hostile")
+            .env("TMPDIR", "/hostile")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "/tmp/codex home's|/tmp/fixed"
+        );
+    }
+
+    #[test]
+    fn unsupported_shell_is_rejected_before_launch() {
+        assert!(shell_dialect("/bin/tcsh").is_err());
+        assert!(shell_dialect("not-a-shell").is_err());
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -403,6 +518,8 @@ impl ProcessManager {
             .filter(|path| !path.is_empty())
             .map_or_else(|| PathBuf::from("."), PathBuf::from);
 
+        let capabilities = self.inner.sandbox.capabilities().cloned();
+
         #[cfg(windows)]
         let (shell, args) = {
             let shell = input
@@ -423,19 +540,31 @@ impl ProcessManager {
                 .clone()
                 .or_else(|| std::env::var("SHELL").ok())
                 .unwrap_or_else(|| "/bin/sh".to_owned());
+            let dialect = shell_dialect(&shell)?;
+            let command = capabilities.as_ref().map_or_else(
+                || Ok(input.cmd.clone()),
+                |snapshot| {
+                    command_with_fixed_environment(dialect, snapshot.environment(), &input.cmd)
+                },
+            )?;
             let mode = if input.login.unwrap_or(true) {
                 "-lc"
             } else {
                 "-c"
             };
-            (shell, vec![mode.to_owned(), input.cmd.clone()])
+            (shell, vec![mode.to_owned(), command])
         };
         let args = args.iter().map(String::as_str).collect::<Vec<_>>();
-        self.inner
+        let mut command = self
+            .inner
             .sandbox
             .command(&shell, &args, &cwd)
             .and_then(mcp_agent_authority::sandbox::SandboxCommand::into_std_command)
-            .map_err(ProcessError::spawn)
+            .map_err(ProcessError::spawn)?;
+        if let Some(capabilities) = capabilities {
+            command.envs(capabilities.environment());
+        }
+        Ok(command)
     }
 
     fn spawn_terminal_monitor(&self, session_id: i32, process: Arc<RunningProcess>) {
