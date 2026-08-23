@@ -1,3 +1,4 @@
+use crate::installer_workflow;
 use crate::package;
 use anyhow::{Context, ensure};
 use serde::Deserialize;
@@ -54,20 +55,10 @@ pub fn run() -> anyhow::Result<()> {
     let workspace = workspace.canonicalize()?;
     let home = home.canonicalize()?;
     let shadow = shadow.canonicalize()?;
-    let project_skill = workspace.join(".agents/skills/inspector-project");
-    let global_skill = home.join(".agents/skills/inspector-global");
-    for (directory, name) in [
-        (&project_skill, "inspector-project"),
-        (&global_skill, "inspector-global"),
-    ] {
-        fs::create_dir_all(directory)?;
-        fs::write(
-            directory.join("SKILL.md"),
-            format!("---\nname: {name}\ndescription: Inspector fixture\n---\nfixture\n"),
-        )?;
-    }
     fs::write(shadow.join("sandbox-exec"), b"#!/bin/sh\nexit 99\n")?;
     package::set_executable(&shadow.join("sandbox-exec"))?;
+    let installer =
+        installer_workflow::InstallerFixture::prepare(profile.path(), &workspace, &home, &shadow)?;
 
     let address = available_loopback()?;
     let log_path = profile.path().join("mcp-agent.stderr.log");
@@ -80,6 +71,9 @@ pub fn run() -> anyhow::Result<()> {
     let child = Command::new(packaged.release_dir.join("mcp-agent"))
         .current_dir(&workspace)
         .env("HOME", &home)
+        .env("CODEX_HOME", installer.codex_home())
+        .env("TMPDIR", installer.tmp_dir())
+        .env("GIT_CONFIG_GLOBAL", installer.git_config())
         .env("PATH", path_env)
         .args(["--bind", &address.to_string()])
         .stdout(Stdio::null())
@@ -138,13 +132,13 @@ pub fn run() -> anyhow::Result<()> {
     let _: serde_json::Value = serde_json::from_slice(&output)
         .context("Inspector returned invalid JSON for apply_patch")?;
     for (tool, arguments) in [
-        ("skills.list", serde_json::json!({})),
+        ("skills.list", serde_json::json!({"scope": "system"})),
         (
             "skills.read",
             serde_json::json!({
-                "scope": "project",
-                "package": "inspector-project",
-                "resource": "SKILL.md"
+                "scope": "system",
+                "package": "skill-installer",
+                "resource": "skill://host/system/skill-installer/SKILL.md"
             }),
         ),
     ] {
@@ -154,6 +148,24 @@ pub fn run() -> anyhow::Result<()> {
         fs::read_to_string(workspace.join("inspector-created.txt"))? == "inspector\n",
         "Inspector apply_patch did not modify the disposable workspace"
     );
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("create packaged installer workflow runtime")?;
+    runtime.block_on(installer.run(&endpoint))?;
+    for (tool, arguments) in [
+        ("skills.list", serde_json::json!({"scope": "project"})),
+        (
+            "skills.read",
+            serde_json::json!({
+                "scope": "project",
+                "package": "recreated-project",
+                "resource": "skill://host/project/recreated-project/SKILL.md"
+            }),
+        ),
+    ] {
+        inspector_allow_schema_error(&endpoint, tool, &arguments)?;
+    }
     server.stop()?;
     println!("MCP Inspector {INSPECTOR_PACKAGE}: listed and called all five packaged macOS tools");
     Ok(())
