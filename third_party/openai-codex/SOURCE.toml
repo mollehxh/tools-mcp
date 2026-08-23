@@ -9,6 +9,7 @@ notice_sha256 = "9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c22091
 audited_roots = [
   "crates/codex-tools-runtime/src/upstream",
   "crates/skill-store/src/upstream",
+  "third_party/openai-codex/skill-installer",
   "tests/conformance/fixtures",
 ]
 
@@ -275,3 +276,80 @@ source_sha256 = "7ec8e03fa3d3942138c567386985c8ef7b490b6ced0b3eb4891d8f5429057f4
 local_sha256 = "7ec8e03fa3d3942138c567386985c8ef7b490b6ced0b3eb4891d8f5429057f4b"
 license = "Apache-2.0"
 requirements = ["R2", "R3", "R6", "R7", "R8", "R9"]
+
+[[files]]
+local_path = "third_party/openai-codex/skill-installer/SKILL.md"
+upstream_path = "codex-rs/skills/src/assets/samples/skill-installer/SKILL.md"
+module = "system-skill::skill-installer"
+status = "adapted-text"
+source_sha256 = "d68b77e5bbb34dedab89d134da52855f140fc4b4299b80104f534e3b9e98f8ee"
+local_sha256 = "72402ab63f95e7a0ee11ebffc0cf32015fbce4c72422d0fe6b290eabea42f506"
+license = "Apache-2.0"
+requirements = ["R14", "R15", "R17", "R18"]
+mode = 420
+
+[[files]]
+local_path = "third_party/openai-codex/skill-installer/scripts/install-skill-from-github.py"
+upstream_path = "codex-rs/skills/src/assets/samples/skill-installer/scripts/install-skill-from-github.py"
+module = "system-skill::skill-installer::install"
+status = "unchanged"
+source_sha256 = "0fbbd36e8ea294442c0bd48d6f610a2e8656216bfef5c322f1dcf448ef2f09f1"
+local_sha256 = "0fbbd36e8ea294442c0bd48d6f610a2e8656216bfef5c322f1dcf448ef2f09f1"
+license = "Apache-2.0"
+requirements = ["R15", "R16", "R17", "R18"]
+mode = 493
+
+[[files]]
+local_path = "third_party/openai-codex/skill-installer/scripts/github_utils.py"
+upstream_path = "codex-rs/skills/src/assets/samples/skill-installer/scripts/github_utils.py"
+module = "system-skill::skill-installer::github-utils"
+status = "unchanged"
+source_sha256 = "61c1bbe2ae217433b4b6f9f09f21aca4df52c12598068343ade719f706e4859b"
+local_sha256 = "61c1bbe2ae217433b4b6f9f09f21aca4df52c12598068343ade719f706e4859b"
+license = "Apache-2.0"
+requirements = ["R15", "R16"]
+mode = 420
+
+[[files]]
+local_path = "third_party/openai-codex/skill-installer/LICENSE.txt"
+upstream_path = "codex-rs/skills/src/assets/samples/skill-installer/LICENSE.txt"
+module = "system-skill::skill-installer::license"
+status = "unchanged"
+source_sha256 = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+local_sha256 = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+license = "Apache-2.0"
+requirements = ["R14", "R15"]
+mode = 420
+
+[[files]]
+local_path = "third_party/openai-codex/skill-installer/agents/openai.yaml"
+upstream_path = "codex-rs/skills/src/assets/samples/skill-installer/agents/openai.yaml"
+module = "system-skill::skill-installer::agent-metadata"
+status = "unchanged"
+source_sha256 = "5ce223d8b1070b82c42298538f1b8d376f788eb9e7a42a987e8c094070d73f0e"
+local_sha256 = "5ce223d8b1070b82c42298538f1b8d376f788eb9e7a42a987e8c094070d73f0e"
+license = "Apache-2.0"
+requirements = ["R14", "R15"]
+mode = 420
+
+[[files]]
+local_path = "third_party/openai-codex/skill-installer/assets/skill-installer-small.svg"
+upstream_path = "codex-rs/skills/src/assets/samples/skill-installer/assets/skill-installer-small.svg"
+module = "system-skill::skill-installer::small-icon"
+status = "unchanged"
+source_sha256 = "3928703ff00dc1a681e7a22401843b7edcbd4b2051651ce4c43b75f7e140504e"
+local_sha256 = "3928703ff00dc1a681e7a22401843b7edcbd4b2051651ce4c43b75f7e140504e"
+license = "Apache-2.0"
+requirements = ["R14", "R15"]
+mode = 420
+
+[[files]]
+local_path = "third_party/openai-codex/skill-installer/assets/skill-installer.png"
+upstream_path = "codex-rs/skills/src/assets/samples/skill-installer/assets/skill-installer.png"
+module = "system-skill::skill-installer::icon"
+status = "unchanged"
+source_sha256 = "d0a230b1a79b71b858b7c215a0fbb0768d6459c14ea4ef80c61592629bf0e605"
+local_sha256 = "d0a230b1a79b71b858b7c215a0fbb0768d6459c14ea4ef80c61592629bf0e605"
+license = "Apache-2.0"
+requirements = ["R14", "R15"]
+mode = 420

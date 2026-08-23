@@ -2,29 +2,123 @@ use crate::sandbox::{CAPABILITY_PROTOCOL, PINNED_CODEX_COMMIT};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 pub const RELEASE_MANIFEST_FILE: &str = "release-manifest.json";
-pub const REQUIRED_RELEASE_ARTIFACTS: [(&str, ReleaseArtifactKind); 7] = [
-    ("LICENSE", ReleaseArtifactKind::License),
-    ("NOTICE", ReleaseArtifactKind::Notice),
-    ("THIRD_PARTY_NOTICES.md", ReleaseArtifactKind::Notice),
-    ("mcp-agent", ReleaseArtifactKind::Executable),
-    (
+pub const RELEASE_CHECKSUMS_FILE: &str = "SHA256SUMS";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReleaseArtifactSpec {
+    pub path: &'static str,
+    pub kind: ReleaseArtifactKind,
+    pub mode: u32,
+    pub expected_sha256: Option<&'static str>,
+}
+
+pub const REQUIRED_RELEASE_ARTIFACTS: [ReleaseArtifactSpec; 15] = [
+    spec(
+        "LICENSE",
+        ReleaseArtifactKind::License,
+        0o644,
+        Some("d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc"),
+    ),
+    spec(
+        "NOTICE",
+        ReleaseArtifactKind::Notice,
+        0o644,
+        Some("9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915"),
+    ),
+    spec(
+        "THIRD_PARTY_NOTICES.md",
+        ReleaseArtifactKind::Notice,
+        0o644,
+        Some("155ce30c0b9edeac142dc1659a978b0d5dd65e48f636e251c72493b361500944"),
+    ),
+    spec("mcp-agent", ReleaseArtifactKind::Executable, 0o755, None),
+    spec(
         "sandbox-manifest.json",
         ReleaseArtifactKind::SandboxManifest,
+        0o644,
+        None,
     ),
-    (
+    spec(
         "sandbox/macos-seatbelt.marker",
         ReleaseArtifactKind::SandboxMarker,
+        0o644,
+        None,
     ),
-    (
+    spec(
+        "sandbox/preflight-canary",
+        ReleaseArtifactKind::PreflightCanary,
+        0o644,
+        Some("41f77362a3bca39b73c56e88d50d5711d1cf07ac5bd92dd1a0b92056a91daab0"),
+    ),
+    spec(
         "sandbox/workspace-write.policy",
         ReleaseArtifactKind::SandboxPolicy,
+        0o644,
+        None,
+    ),
+    spec(
+        "system-skills/skill-installer/LICENSE.txt",
+        ReleaseArtifactKind::SystemSkill,
+        0o644,
+        Some("cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"),
+    ),
+    spec(
+        "system-skills/skill-installer/SKILL.md",
+        ReleaseArtifactKind::SystemSkill,
+        0o644,
+        Some("72402ab63f95e7a0ee11ebffc0cf32015fbce4c72422d0fe6b290eabea42f506"),
+    ),
+    spec(
+        "system-skills/skill-installer/agents/openai.yaml",
+        ReleaseArtifactKind::SystemSkill,
+        0o644,
+        Some("5ce223d8b1070b82c42298538f1b8d376f788eb9e7a42a987e8c094070d73f0e"),
+    ),
+    spec(
+        "system-skills/skill-installer/assets/skill-installer-small.svg",
+        ReleaseArtifactKind::SystemSkill,
+        0o644,
+        Some("3928703ff00dc1a681e7a22401843b7edcbd4b2051651ce4c43b75f7e140504e"),
+    ),
+    spec(
+        "system-skills/skill-installer/assets/skill-installer.png",
+        ReleaseArtifactKind::SystemSkill,
+        0o644,
+        Some("d0a230b1a79b71b858b7c215a0fbb0768d6459c14ea4ef80c61592629bf0e605"),
+    ),
+    spec(
+        "system-skills/skill-installer/scripts/github_utils.py",
+        ReleaseArtifactKind::SystemSkill,
+        0o644,
+        Some("61c1bbe2ae217433b4b6f9f09f21aca4df52c12598068343ade719f706e4859b"),
+    ),
+    spec(
+        "system-skills/skill-installer/scripts/install-skill-from-github.py",
+        ReleaseArtifactKind::SystemSkill,
+        0o755,
+        Some("0fbbd36e8ea294442c0bd48d6f610a2e8656216bfef5c322f1dcf448ef2f09f1"),
     ),
 ];
+
+const fn spec(
+    path: &'static str,
+    kind: ReleaseArtifactKind,
+    mode: u32,
+    expected_sha256: Option<&'static str>,
+) -> ReleaseArtifactSpec {
+    ReleaseArtifactSpec {
+        path,
+        kind,
+        mode,
+        expected_sha256,
+    }
+}
 const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
 const MAX_ARTIFACT_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -50,6 +144,7 @@ pub struct ReleaseArtifact {
     pub sha256: String,
     pub bytes: u64,
     pub kind: ReleaseArtifactKind,
+    pub mode: u32,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -61,6 +156,8 @@ pub enum ReleaseArtifactKind {
     SandboxManifest,
     SandboxMarker,
     SandboxPolicy,
+    PreflightCanary,
+    SystemSkill,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -91,19 +188,36 @@ pub fn verify_release(
     executable: &Path,
     expected_version: &str,
 ) -> Result<ReleaseManifest, ReleaseError> {
-    let expected_target = current_release_target().ok_or(ReleaseError::UnsupportedPlatform)?;
     let release = release.canonicalize()?;
     let executable = executable.canonicalize()?;
-    if executable.parent() != Some(release.as_path()) {
+    let packaged_executable = release
+        .join("mcp-agent")
+        .canonicalize()
+        .map_err(|_| ReleaseError::ArtifactMismatch)?;
+    if executable != packaged_executable {
         return Err(ReleaseError::ArtifactMismatch);
     }
+    verify_release_assets(&release, expected_version)
+}
+
+/// Verifies all build-owned assets in a release directory without requiring the
+/// running executable to be colocated with them.
+///
+/// This is the only relaxation used for an explicit `--release-dir`: the same
+/// exact file set, compatibility metadata, digests, and modes remain mandatory.
+pub fn verify_release_assets(
+    release: &Path,
+    expected_version: &str,
+) -> Result<ReleaseManifest, ReleaseError> {
+    let expected_target = current_release_target().ok_or(ReleaseError::UnsupportedPlatform)?;
+    let release = release.canonicalize()?;
 
     let manifest_path = release.join(RELEASE_MANIFEST_FILE);
     let manifest_bytes = read_bounded(&manifest_path, MAX_MANIFEST_BYTES)
         .map_err(|_| ReleaseError::ManifestInvalid)?;
     let manifest: ReleaseManifest =
         serde_json::from_slice(&manifest_bytes).map_err(|_| ReleaseError::ManifestInvalid)?;
-    if manifest.schema_version != 1
+    if manifest.schema_version != 2
         || manifest.package != "mcp-agent"
         || manifest.version != expected_version
         || manifest.target != expected_target
@@ -116,20 +230,23 @@ pub fn verify_release(
         return Err(ReleaseError::CompatibilityMismatch);
     }
 
-    let required = REQUIRED_RELEASE_ARTIFACTS
-        .iter()
-        .map(|(path, _)| *path)
-        .collect::<BTreeSet<_>>();
+    if manifest.artifacts.len() != REQUIRED_RELEASE_ARTIFACTS.len() {
+        return Err(ReleaseError::ArtifactMismatch);
+    }
     let mut observed = BTreeSet::new();
-    for artifact in &manifest.artifacts {
+    for (artifact, expected) in manifest
+        .artifacts
+        .iter()
+        .zip(REQUIRED_RELEASE_ARTIFACTS.iter())
+    {
         validate_relative(&artifact.path)?;
         if !observed.insert(artifact.path.as_str()) {
             return Err(ReleaseError::ArtifactMismatch);
         }
-        let expected_kind = REQUIRED_RELEASE_ARTIFACTS
-            .iter()
-            .find_map(|(path, kind)| (*path == artifact.path).then_some(*kind));
-        if expected_kind != Some(artifact.kind) {
+        if artifact.path != expected.path
+            || artifact.kind != expected.kind
+            || artifact.mode != expected.mode
+        {
             return Err(ReleaseError::ArtifactMismatch);
         }
         let path = release.join(&artifact.path);
@@ -139,22 +256,101 @@ pub fn verify_release(
             || metadata.len() != artifact.bytes
             || artifact.sha256.len() != 64
             || sha256_file(&path, MAX_ARTIFACT_BYTES)? != artifact.sha256
+            || expected
+                .expected_sha256
+                .is_some_and(|digest| artifact.sha256 != digest)
+            || file_mode(&metadata) != artifact.mode
         {
             return Err(ReleaseError::ArtifactMismatch);
         }
     }
-    if observed != required {
-        return Err(ReleaseError::ArtifactMismatch);
-    }
-    if !observed.contains(
-        executable
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or(ReleaseError::ArtifactMismatch)?,
-    ) {
+    verify_checksum_file(&release, &manifest.artifacts)?;
+    let expected_files = REQUIRED_RELEASE_ARTIFACTS
+        .iter()
+        .map(|spec| spec.path)
+        .chain([RELEASE_MANIFEST_FILE, RELEASE_CHECKSUMS_FILE])
+        .collect::<BTreeSet<_>>();
+    let mut actual_files = BTreeSet::new();
+    collect_release_files(&release, &release, &mut actual_files)?;
+    if actual_files != expected_files {
         return Err(ReleaseError::ArtifactMismatch);
     }
     Ok(manifest)
+}
+
+fn verify_checksum_file(release: &Path, artifacts: &[ReleaseArtifact]) -> Result<(), ReleaseError> {
+    let mut entries = artifacts
+        .iter()
+        .map(|artifact| (artifact.path.as_str(), artifact.sha256.clone()))
+        .collect::<Vec<_>>();
+    entries.push((
+        RELEASE_MANIFEST_FILE,
+        sha256_file(&release.join(RELEASE_MANIFEST_FILE), MAX_MANIFEST_BYTES)?,
+    ));
+    entries.sort_unstable_by_key(|(path, _)| *path);
+    let mut expected = String::new();
+    for (path, digest) in entries {
+        writeln!(expected, "{digest}  {path}").map_err(|_| ReleaseError::ArtifactMismatch)?;
+    }
+    let actual = read_bounded(&release.join(RELEASE_CHECKSUMS_FILE), MAX_MANIFEST_BYTES)
+        .map_err(|_| ReleaseError::ArtifactMismatch)?;
+    if actual != expected.as_bytes() {
+        return Err(ReleaseError::ArtifactMismatch);
+    }
+    let metadata = fs::symlink_metadata(release.join(RELEASE_CHECKSUMS_FILE))
+        .map_err(|_| ReleaseError::ArtifactMismatch)?;
+    if !metadata.is_file() || file_mode(&metadata) != 0o644 {
+        return Err(ReleaseError::ArtifactMismatch);
+    }
+    Ok(())
+}
+
+fn collect_release_files<'a>(
+    release: &'a Path,
+    directory: &Path,
+    files: &mut BTreeSet<&'a str>,
+) -> Result<(), ReleaseError> {
+    for entry in fs::read_dir(directory).map_err(|_| ReleaseError::ArtifactMismatch)? {
+        let entry = entry.map_err(|_| ReleaseError::ArtifactMismatch)?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|_| ReleaseError::ArtifactMismatch)?;
+        if metadata.file_type().is_symlink() {
+            return Err(ReleaseError::ArtifactMismatch);
+        }
+        if metadata.is_dir() {
+            collect_release_files(release, &path, files)?;
+        } else if metadata.is_file() {
+            let relative = path
+                .strip_prefix(release)
+                .map_err(|_| ReleaseError::ArtifactMismatch)?
+                .to_str()
+                .ok_or(ReleaseError::ArtifactMismatch)?;
+            // All expected paths are static UTF-8. Intern the observed path only
+            // for the duration of this verification by matching it to that set.
+            let expected = REQUIRED_RELEASE_ARTIFACTS
+                .iter()
+                .map(|spec| spec.path)
+                .chain([RELEASE_MANIFEST_FILE, RELEASE_CHECKSUMS_FILE])
+                .find(|expected| *expected == relative)
+                .ok_or(ReleaseError::ArtifactMismatch)?;
+            files.insert(expected);
+        } else {
+            return Err(ReleaseError::ArtifactMismatch);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn file_mode(metadata: &fs::Metadata) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+
+    metadata.permissions().mode() & 0o777
+}
+
+#[cfg(not(unix))]
+fn file_mode(_metadata: &fs::Metadata) -> u32 {
+    0o644
 }
 
 fn validate_relative(path: &str) -> Result<(), ReleaseError> {

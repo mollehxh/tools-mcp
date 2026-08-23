@@ -3,6 +3,115 @@ use xtask::upstream::{
     verify_requirement_ids, verify_rmcp_versions, verify_root, verify_trusted_source_hash,
 };
 
+const INSTALLER_ROOT: &str = "third_party/openai-codex/skill-installer";
+
+fn collect_installer_files(
+    root: &std::path::Path,
+    current: &std::path::Path,
+    actual: &mut std::collections::BTreeMap<String, (String, u32)>,
+) {
+    use sha2::{Digest, Sha256};
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    for entry in std::fs::read_dir(current).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if path.is_dir() {
+            collect_installer_files(root, &path, actual);
+            continue;
+        }
+        let relative = path
+            .strip_prefix(root)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let digest = format!("{:x}", Sha256::digest(std::fs::read(&path).unwrap()));
+        #[cfg(unix)]
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        #[cfg(not(unix))]
+        let mode = if relative == "scripts/install-skill-from-github.py" {
+            0o755
+        } else {
+            0o644
+        };
+        actual.insert(relative, (digest, mode));
+    }
+}
+
+#[test]
+fn installer_payload_matches_the_pinned_upstream_snapshot() {
+    use std::collections::BTreeMap;
+
+    let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap();
+    let expected = BTreeMap::from([
+        (
+            "LICENSE.txt",
+            (
+                "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+                0o644,
+            ),
+        ),
+        (
+            "SKILL.md",
+            (
+                // The local digest is intentionally distinct from the pinned upstream
+                // digest and is independently registered after the instruction-only adaptation.
+                "72402ab63f95e7a0ee11ebffc0cf32015fbce4c72422d0fe6b290eabea42f506",
+                0o644,
+            ),
+        ),
+        (
+            "agents/openai.yaml",
+            (
+                "5ce223d8b1070b82c42298538f1b8d376f788eb9e7a42a987e8c094070d73f0e",
+                0o644,
+            ),
+        ),
+        (
+            "assets/skill-installer-small.svg",
+            (
+                "3928703ff00dc1a681e7a22401843b7edcbd4b2051651ce4c43b75f7e140504e",
+                0o644,
+            ),
+        ),
+        (
+            "assets/skill-installer.png",
+            (
+                "d0a230b1a79b71b858b7c215a0fbb0768d6459c14ea4ef80c61592629bf0e605",
+                0o644,
+            ),
+        ),
+        (
+            "scripts/github_utils.py",
+            (
+                "61c1bbe2ae217433b4b6f9f09f21aca4df52c12598068343ade719f706e4859b",
+                0o644,
+            ),
+        ),
+        (
+            "scripts/install-skill-from-github.py",
+            (
+                "0fbbd36e8ea294442c0bd48d6f610a2e8656216bfef5c322f1dcf448ef2f09f1",
+                0o755,
+            ),
+        ),
+    ])
+    .into_iter()
+    .map(|(path, (digest, mode))| (path.to_owned(), (digest.to_owned(), mode)))
+    .collect::<BTreeMap<_, _>>();
+    let root = repository.join(INSTALLER_ROOT);
+    assert!(root.is_dir(), "pinned installer payload is missing");
+
+    let mut actual = BTreeMap::new();
+    collect_installer_files(&root, &root, &mut actual);
+
+    assert_eq!(actual, expected);
+    assert!(!root.join("scripts/list-skills.py").exists());
+}
+
 fn copy_file(source_root: &std::path::Path, target_root: &std::path::Path, relative: &str) {
     let target = target_root.join(relative);
     std::fs::create_dir_all(target.parent().unwrap()).unwrap();
@@ -140,6 +249,35 @@ fn repository_audit_runs_end_to_end_and_rejects_notice_mutation() {
     .unwrap();
     let error = verify_root(fixture.path()).unwrap_err();
     assert!(error.to_string().contains("notice verification"));
+}
+
+#[cfg(unix)]
+#[test]
+fn repository_audit_rejects_installer_mode_drift() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = audit_fixture();
+    let installer = fixture
+        .path()
+        .join(INSTALLER_ROOT)
+        .join("scripts/install-skill-from-github.py");
+    std::fs::set_permissions(installer, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    let error = verify_root(fixture.path()).unwrap_err();
+    assert!(error.to_string().contains("mode mismatch"));
+}
+
+#[test]
+fn repository_audit_rejects_omitted_listing_script_reintroduction() {
+    let fixture = audit_fixture();
+    let listing = fixture
+        .path()
+        .join(INSTALLER_ROOT)
+        .join("scripts/list-skills.py");
+    std::fs::write(listing, b"unsupported catalog behavior").unwrap();
+
+    let error = verify_root(fixture.path()).unwrap_err();
+    assert!(error.to_string().contains("untracked audited source"));
 }
 
 #[test]

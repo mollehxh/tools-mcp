@@ -47,7 +47,7 @@ pub(super) fn run(sandbox: &Sandbox) -> Result<PreflightReceipt, SandboxError> {
         cleanup?;
     }
 
-    let canary = sandbox.release.join(&sandbox.manifest.policy_path);
+    let canary = sandbox.release.join(&sandbox.manifest.canary_path);
     if roots.iter().any(|root| canary.starts_with(root)) {
         return Err(SandboxError::Preflight(
             "manifest-verified release canary overlaps a writable root".to_owned(),
@@ -55,7 +55,7 @@ pub(super) fn run(sandbox: &Sandbox) -> Result<PreflightReceipt, SandboxError> {
     }
     sandbox.reverify()?;
     let original = fs::read(&canary)?;
-    if digest(&original) != sandbox.manifest.policy_sha256 {
+    if digest(&original) != sandbox.manifest.canary_sha256 {
         return Err(SandboxError::ArtifactReplaced);
     }
     fs::OpenOptions::new()

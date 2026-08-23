@@ -29,6 +29,7 @@ pub use preflight::PreflightReceipt;
 
 pub const CAPABILITY_PROTOCOL: &str = "mcp-agent-workspace-write/v1";
 pub const PINNED_CODEX_COMMIT: &str = "8cabf5a6cf103cebe338d46346e43e3201e64f41";
+pub const PREFLIGHT_CANARY_BYTES: &[u8] = b"mcp-agent workspace-write sandbox preflight canary\n";
 const MANIFEST_FILE: &str = "sandbox-manifest.json";
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 const MAX_POLICY_BYTES: u64 = 1024 * 1024;
@@ -49,6 +50,8 @@ pub struct SandboxManifest {
     pub artifact_sha256: String,
     pub policy_path: PathBuf,
     pub policy_sha256: String,
+    pub canary_path: PathBuf,
+    pub canary_sha256: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -139,6 +142,7 @@ impl SandboxManifest {
 pub fn expected_manifest() -> Result<SandboxManifest, SandboxError> {
     let artifact_path = backend_artifact_path();
     let policy_path = PathBuf::from("sandbox/workspace-write.policy");
+    let canary_path = PathBuf::from("sandbox/preflight-canary");
     let artifact_sha256 = expected_artifact_digest()?;
     let policy_bytes = native_policy_bytes();
     Ok(SandboxManifest {
@@ -149,6 +153,8 @@ pub fn expected_manifest() -> Result<SandboxManifest, SandboxError> {
         artifact_sha256,
         policy_path,
         policy_sha256: digest(policy_bytes),
+        canary_path,
+        canary_sha256: digest(PREFLIGHT_CANARY_BYTES),
     })
 }
 
@@ -178,6 +184,7 @@ impl Sandbox {
         }
         validate_relative_asset(&manifest.artifact_path)?;
         validate_relative_asset(&manifest.policy_path)?;
+        validate_relative_asset(&manifest.canary_path)?;
         // The release manifest is descriptive, not a trust root. Every field
         // that controls executable code or policy must match the build-owned
         // expectation before any release file is trusted.
@@ -193,6 +200,11 @@ impl Sandbox {
         verify_file_digest(
             &release.join(&manifest.policy_path),
             &manifest.policy_sha256,
+            MAX_POLICY_BYTES,
+        )?;
+        verify_file_digest(
+            &release.join(&manifest.canary_path),
+            &manifest.canary_sha256,
             MAX_POLICY_BYTES,
         )?;
         let backend = Arc::new(open_verified_backend(&release)?);
@@ -261,6 +273,11 @@ impl Sandbox {
         verify_file_digest(
             &self.release.join(&self.manifest.policy_path),
             &self.manifest.policy_sha256,
+            MAX_POLICY_BYTES,
+        )?;
+        verify_file_digest(
+            &self.release.join(&self.manifest.canary_path),
+            &self.manifest.canary_sha256,
             MAX_POLICY_BYTES,
         )?;
         self.backend.reverify()
@@ -546,6 +563,7 @@ fn platform_command(
 
 fn materialize_backend(release: &Path, manifest: &SandboxManifest) -> Result<(), SandboxError> {
     fs::write(release.join(&manifest.policy_path), native_policy_bytes())?;
+    fs::write(release.join(&manifest.canary_path), PREFLIGHT_CANARY_BYTES)?;
     #[cfg(target_os = "macos")]
     fs::write(
         release.join(&manifest.artifact_path),

@@ -79,6 +79,34 @@ const PINNED_SOURCE_DIGESTS: &[(&str, &str)] = &[
         "normalized-contracts/tool-contracts-v1",
         "cb2253251f7ac4ec02263f7050118d500b4c8603a07e9b871f64ca963df508bf",
     ),
+    (
+        "codex-rs/skills/src/assets/samples/skill-installer/SKILL.md",
+        "d68b77e5bbb34dedab89d134da52855f140fc4b4299b80104f534e3b9e98f8ee",
+    ),
+    (
+        "codex-rs/skills/src/assets/samples/skill-installer/scripts/install-skill-from-github.py",
+        "0fbbd36e8ea294442c0bd48d6f610a2e8656216bfef5c322f1dcf448ef2f09f1",
+    ),
+    (
+        "codex-rs/skills/src/assets/samples/skill-installer/scripts/github_utils.py",
+        "61c1bbe2ae217433b4b6f9f09f21aca4df52c12598068343ade719f706e4859b",
+    ),
+    (
+        "codex-rs/skills/src/assets/samples/skill-installer/LICENSE.txt",
+        "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    ),
+    (
+        "codex-rs/skills/src/assets/samples/skill-installer/agents/openai.yaml",
+        "5ce223d8b1070b82c42298538f1b8d376f788eb9e7a42a987e8c094070d73f0e",
+    ),
+    (
+        "codex-rs/skills/src/assets/samples/skill-installer/assets/skill-installer-small.svg",
+        "3928703ff00dc1a681e7a22401843b7edcbd4b2051651ce4c43b75f7e140504e",
+    ),
+    (
+        "codex-rs/skills/src/assets/samples/skill-installer/assets/skill-installer.png",
+        "d0a230b1a79b71b858b7c215a0fbb0768d6459c14ea4ef80c61592629bf0e605",
+    ),
 ];
 
 // These exemptions are deliberately compiled into the verifier. A manifest edit cannot turn a
@@ -168,6 +196,8 @@ struct SourceFile {
     local_sha256: String,
     license: String,
     requirements: Vec<String>,
+    #[serde(default)]
+    mode: Option<u32>,
     #[serde(default)]
     baseline_path: Option<String>,
     #[serde(default)]
@@ -332,6 +362,9 @@ pub fn verify_root(root: &Path) -> anyhow::Result<()> {
         );
         verify_requirement_ids(&file.requirements, &file.local_path)?;
         let bytes = verify_hash(root, &file.local_path, &file.local_sha256)?;
+        if let Some(mode) = file.mode {
+            verify_mode(&root.join(&file.local_path), mode)?;
+        }
         match file.status.as_str() {
             "unchanged" => {
                 verify_trusted_source_hash(&file.upstream_path, &file.source_sha256)?;
@@ -378,6 +411,21 @@ pub fn verify_root(root: &Path) -> anyhow::Result<()> {
                 );
                 verify_contract_delta_coverage(&baseline, &local, &registry)?;
             }
+            "adapted-text" => {
+                verify_trusted_source_hash(&file.upstream_path, &file.source_sha256)?;
+                ensure!(
+                    file.local_sha256 != file.source_sha256,
+                    "adapted text file unexpectedly matches upstream: {}",
+                    file.local_path
+                );
+                ensure!(
+                    file.baseline_path.is_none() && file.delta_registry_path.is_none(),
+                    "adapted text file cannot use JSON delta metadata: {}",
+                    file.local_path
+                );
+                std::str::from_utf8(&bytes)
+                    .with_context(|| format!("read adapted text {} as UTF-8", file.local_path))?;
+            }
             "baseline" => {
                 verify_trusted_source_hash(&file.upstream_path, &file.source_sha256)?;
                 ensure!(
@@ -403,6 +451,28 @@ pub fn verify_root(root: &Path) -> anyhow::Result<()> {
         actual == mapped,
         "untracked audited source or fixture: mapped={mapped:?}, actual={actual:?}"
     );
+    Ok(())
+}
+
+#[cfg(unix)]
+fn verify_mode(path: &Path, expected: u32) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let actual = fs::symlink_metadata(path)
+        .with_context(|| format!("read mode for {}", path.display()))?
+        .permissions()
+        .mode()
+        & 0o777;
+    ensure!(
+        actual == expected,
+        "mode mismatch for {}: expected {expected:o}, got {actual:o}",
+        path.display()
+    );
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn verify_mode(_path: &Path, _expected: u32) -> anyhow::Result<()> {
     Ok(())
 }
 

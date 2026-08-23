@@ -8,6 +8,8 @@ third-party open-source software.
 This distribution contains source derived from OpenAI Codex commit
 `8cabf5a6cf103cebe338d46346e43e3201e64f41`, licensed under Apache-2.0.
 The retained upstream license and notice are packaged as `LICENSE` and `NOTICE`.
+The built-in `system-skills/skill-installer` package also carries its original upstream
+`LICENSE.txt` beside the retained scripts, metadata, and assets.
 The machine-readable source paths, hashes, and modification classifications are
 in `third_party/openai-codex/SOURCE.toml`; local adaptations are described in
 `third_party/openai-codex/MODIFICATIONS.md`.

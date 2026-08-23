@@ -79,6 +79,7 @@ fn manifest_carries_protocol_target_checksum_and_pinned_provenance() {
     assert!(!manifest.target.is_empty());
     assert_eq!(manifest.artifact_sha256.len(), 64);
     assert_eq!(manifest.policy_sha256.len(), 64);
+    assert_eq!(manifest.canary_sha256.len(), 64);
 }
 
 #[test]
@@ -127,6 +128,21 @@ fn policy_or_helper_replacement_after_load_fails_closed() {
     fs::write(release.join(&manifest.policy_path), b"replaced").unwrap();
     let sentinel = fixture.outside.join("sentinel");
     fs::write(&sentinel, b"unchanged").unwrap();
+    assert!(matches!(
+        sandbox.preflight(),
+        Err(SandboxError::ArtifactReplaced)
+    ));
+}
+
+#[test]
+fn preflight_canary_replacement_after_load_fails_closed() {
+    let fixture = conformance::Fixture::new();
+    let release = fixture.release_dir();
+    let manifest = expected_manifest().unwrap();
+    manifest.write_release_relative(&release).unwrap();
+    let sandbox = Sandbox::load(fixture.authority(), &release).unwrap();
+
+    fs::write(release.join(&manifest.canary_path), b"replaced").unwrap();
     assert!(matches!(
         sandbox.preflight(),
         Err(SandboxError::ArtifactReplaced)
@@ -237,7 +253,7 @@ fn preflight_fails_when_unix_permissions_could_explain_canary_denial() {
     let manifest = expected_manifest().unwrap();
     manifest.write_release_relative(&release).unwrap();
     fs::set_permissions(
-        release.join(&manifest.policy_path),
+        release.join(&manifest.canary_path),
         fs::Permissions::from_mode(0o444),
     )
     .unwrap();

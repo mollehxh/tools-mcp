@@ -2,7 +2,7 @@ use crate::cli::Cli;
 use anyhow::{Context, Result};
 use axum::Router;
 use codex_tools_runtime::process::{OwnerId, ProcessManager};
-use mcp_agent_authority::release::verify_release;
+use mcp_agent_authority::release::{verify_release, verify_release_assets};
 use mcp_agent_authority::sandbox::{PreflightReceipt, Sandbox};
 use mcp_agent_authority::{CapabilitySnapshot, WorkspaceAuthority};
 use mcp_agent_server::ApplicationContext;
@@ -25,7 +25,10 @@ pub const EXPOSURE_WARNING: &str = "WARNING: possession of a tunnel URL grants c
 pub async fn run(cli: Cli) -> Result<()> {
     let workspace = std::env::current_dir().context("current directory is unavailable")?;
     let release = release_dir(&cli)?;
-    if cli.release_dir.is_none() {
+    if cli.release_dir.is_some() {
+        verify_release_assets(&release, env!("CARGO_PKG_VERSION"))
+            .context("configured release asset verification failed")?;
+    } else {
         let executable = std::env::current_exe().context("executable path is unavailable")?;
         verify_release(&release, &executable, env!("CARGO_PKG_VERSION"))
             .context("installed release compatibility verification failed")?;

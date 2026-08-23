@@ -1,11 +1,12 @@
 use anyhow::{Context, ensure};
 use flate2::{Compression, GzBuilder};
 use mcp_agent_authority::release::{
-    RELEASE_MANIFEST_FILE, REQUIRED_RELEASE_ARTIFACTS, ReleaseArtifact, ReleaseArtifactKind,
-    ReleaseManifest, current_release_target,
+    RELEASE_CHECKSUMS_FILE, RELEASE_MANIFEST_FILE, REQUIRED_RELEASE_ARTIFACTS, ReleaseArtifact,
+    ReleaseArtifactSpec, ReleaseManifest, current_release_target, verify_release_assets,
 };
 use mcp_agent_authority::sandbox::{CAPABILITY_PROTOCOL, PINNED_CODEX_COMMIT, expected_manifest};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs;
@@ -130,12 +131,15 @@ pub fn assemble(options: &PackageOptions) -> anyhow::Result<PackageResult> {
         )?;
     }
 
+    copy_system_skill(&options.repository_root, &staged_release)?;
+    set_release_modes(&staged_release)?;
+
     let artifacts = REQUIRED_RELEASE_ARTIFACTS
         .iter()
-        .map(|(path, kind)| release_artifact(&staged_release, path, *kind))
+        .map(|spec| release_artifact(&staged_release, spec))
         .collect::<anyhow::Result<Vec<_>>>()?;
     let manifest = ReleaseManifest {
-        schema_version: 1,
+        schema_version: 2,
         package: PACKAGE_NAME.to_owned(),
         version: options.version.clone(),
         target: options.target.clone(),
@@ -152,6 +156,10 @@ pub fn assemble(options: &PackageOptions) -> anyhow::Result<PackageResult> {
     )
     .context("write release manifest")?;
     write_checksums(&staged_release, &manifest.artifacts)?;
+    set_mode(&staged_release.join(RELEASE_MANIFEST_FILE), 0o644)?;
+    set_mode(&staged_release.join(RELEASE_CHECKSUMS_FILE), 0o644)?;
+    verify_release_assets(&staged_release, &options.version)
+        .context("verify staged release assets")?;
 
     let staged_archive = staging.path().join(format!("{release_name}.tar.gz"));
     create_reproducible_archive(&staged_release, &staged_archive, &release_name)?;
@@ -185,11 +193,35 @@ pub fn assemble(options: &PackageOptions) -> anyhow::Result<PackageResult> {
     })
 }
 
-fn release_artifact(
-    release: &Path,
-    path: &str,
-    kind: ReleaseArtifactKind,
-) -> anyhow::Result<ReleaseArtifact> {
+fn copy_system_skill(repository: &Path, release: &Path) -> anyhow::Result<()> {
+    for relative in [
+        "LICENSE.txt",
+        "SKILL.md",
+        "agents/openai.yaml",
+        "assets/skill-installer-small.svg",
+        "assets/skill-installer.png",
+        "scripts/github_utils.py",
+        "scripts/install-skill-from-github.py",
+    ] {
+        copy_file(
+            &repository
+                .join("third_party/openai-codex/skill-installer")
+                .join(relative),
+            &release.join("system-skills/skill-installer").join(relative),
+        )?;
+    }
+    Ok(())
+}
+
+fn set_release_modes(release: &Path) -> anyhow::Result<()> {
+    for spec in &REQUIRED_RELEASE_ARTIFACTS {
+        set_mode(&release.join(spec.path), spec.mode)?;
+    }
+    Ok(())
+}
+
+fn release_artifact(release: &Path, spec: &ReleaseArtifactSpec) -> anyhow::Result<ReleaseArtifact> {
+    let path = spec.path;
     let absolute = release.join(path);
     let metadata =
         fs::metadata(&absolute).with_context(|| format!("read package metadata for {path}"))?;
@@ -198,7 +230,8 @@ fn release_artifact(
         path: path.to_owned(),
         sha256: sha256_file(&absolute)?,
         bytes: metadata.len(),
-        kind,
+        kind: spec.kind,
+        mode: spec.mode,
     })
 }
 
@@ -216,7 +249,7 @@ fn write_checksums(release: &Path, artifacts: &[ReleaseArtifact]) -> anyhow::Res
     for (path, checksum) in checksums {
         writeln!(sums, "{checksum}  {path}")?;
     }
-    fs::write(release.join("SHA256SUMS"), sums).context("write package checksums")
+    fs::write(release.join(RELEASE_CHECKSUMS_FILE), sums).context("write package checksums")
 }
 
 fn create_reproducible_archive(
@@ -229,23 +262,35 @@ fn create_reproducible_archive(
     let mut builder = tar::Builder::new(encoder);
     builder.mode(tar::HeaderMode::Deterministic);
     append_directory(&mut builder, Path::new(release_name))?;
-    append_directory(&mut builder, &Path::new(release_name).join("sandbox"))?;
+    let mut directories = BTreeSet::new();
+    for spec in &REQUIRED_RELEASE_ARTIFACTS {
+        let mut parent = Path::new(spec.path).parent();
+        while let Some(directory) = parent {
+            if directory.as_os_str().is_empty() {
+                break;
+            }
+            directories.insert(directory.to_path_buf());
+            parent = directory.parent();
+        }
+    }
+    for directory in directories {
+        append_directory(&mut builder, &Path::new(release_name).join(directory))?;
+    }
     let mut files = REQUIRED_RELEASE_ARTIFACTS
         .iter()
-        .map(|(path, _)| *path)
-        .chain([RELEASE_MANIFEST_FILE, "SHA256SUMS"])
+        .map(|spec| (spec.path, spec.mode))
+        .chain([
+            (RELEASE_MANIFEST_FILE, 0o644),
+            (RELEASE_CHECKSUMS_FILE, 0o644),
+        ])
         .collect::<Vec<_>>();
-    files.sort_unstable();
-    for relative in files {
+    files.sort_unstable_by_key(|(path, _)| *path);
+    for (relative, mode) in files {
         let mut source = fs::File::open(release.join(relative))?;
         let metadata = source.metadata()?;
         let mut header = tar::Header::new_gnu();
         header.set_size(metadata.len());
-        header.set_mode(if relative == PACKAGE_NAME {
-            0o755
-        } else {
-            0o644
-        });
+        header.set_mode(mode);
         header.set_uid(0);
         header.set_gid(0);
         header.set_mtime(0);
@@ -275,6 +320,11 @@ fn append_directory<W: IoWrite>(builder: &mut tar::Builder<W>, path: &Path) -> a
 }
 
 fn copy_file(source: &Path, destination: &Path) -> anyhow::Result<()> {
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!("create package destination directory {}", parent.display())
+        })?;
+    }
     fs::copy(source, destination).with_context(|| {
         format!(
             "copy package file from {} to {}",
@@ -294,6 +344,19 @@ pub(crate) fn set_executable(path: &Path) -> anyhow::Result<()> {
 
 #[cfg(not(unix))]
 pub(crate) fn set_executable(_path: &Path) -> anyhow::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_mode(_path: &Path, _mode: u32) -> anyhow::Result<()> {
     Ok(())
 }
 

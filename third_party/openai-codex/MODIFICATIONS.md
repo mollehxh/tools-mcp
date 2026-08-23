@@ -26,3 +26,16 @@ explicit legacy exemption whose exact symbol and rationale are pinned in the off
 
 The complete machine-readable delta registry is
 `tests/conformance/fixtures/compatibility-deltas.json`.
+
+## Built-in `skill-installer`
+
+The retained package under `third_party/openai-codex/skill-installer/` comes from
+`codex-rs/skills/src/assets/samples/skill-installer/` at the pinned commit. The two Python files,
+package license, agent metadata, and both image assets are byte-identical to upstream;
+`scripts/list-skills.py` is intentionally omitted.
+
+Only `SKILL.md` is adapted. Its installer behavior and options remain unchanged, while unsupported
+curated/experimental listing and sandbox-escalation instructions are removed. The replacement
+instructions use the immutable `$MCP_AGENT_SYSTEM_SKILLS_ROOT/skill-installer` path bridge, retain
+the script's default global `$CODEX_HOME/skills` destination, document project installation through
+`--dest <workspace>/.agents/skills`, and require ordinary `exec_command` execution (R14-R18).
