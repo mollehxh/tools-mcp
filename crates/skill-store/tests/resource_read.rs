@@ -25,6 +25,7 @@ impl Fixture {
 
     fn root(&self, scope: SkillScope) -> &std::path::Path {
         match scope {
+            SkillScope::System => panic!("system root requires a capability fixture"),
             SkillScope::Project => self.authority.project_skills().root(),
             SkillScope::Global => self.authority.global_skills().root(),
         }
@@ -54,6 +55,7 @@ impl Fixture {
             resource: format!(
                 "skill://host/{}/{package}/{relative}",
                 match scope {
+                    SkillScope::System => "system",
                     SkillScope::Project => "project",
                     SkillScope::Global => "global",
                 }

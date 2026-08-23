@@ -79,11 +79,11 @@
   },
   {
     "name": "skills.list",
-    "description": "List skills owned by the requested host scope. Returns the exact authority, package, and main_resource values required by skills.read. Pass next_cursor back as cursor to continue.",
+    "description": "List built-in system, project, or global skills from an exact host scope. Returns the exact authority, scope, package, and main_resource values required by skills.read. The reserved installer is scope system, package skill-installer, resource skill://host/system/skill-installer/SKILL.md. Pass next_cursor back as cursor to continue.",
     "input_schema": {
       "type": "object",
       "properties": {
-        "scope": { "type": "string", "enum": ["project", "global"] },
+        "scope": { "type": "string", "enum": ["system", "project", "global"] },
         "cursor": { "type": "string" }
       },
       "required": ["scope"],
@@ -98,7 +98,7 @@
             "type": "object",
             "properties": {
               "authority": { "type": "string", "enum": ["host"] },
-              "scope": { "type": "string", "enum": ["project", "global"] },
+              "scope": { "type": "string", "enum": ["system", "project", "global"] },
               "package": { "type": "string" },
               "name": { "type": "string" },
               "description": { "type": "string" },
@@ -129,11 +129,11 @@
   },
   {
     "name": "skills.read",
-    "description": "Read one page from a skill resource. Pass the exact scope and package from skills.list, plus its main_resource or a referenced resource beneath that package. Pass next_cursor back as cursor to continue.",
+    "description": "Read one UTF-8 page from an exact skill resource. Pass the exact scope and package from skills.list, plus its main_resource or a referenced resource beneath that package. Built-in installer guidance must use scope system, package skill-installer, resource skill://host/system/skill-installer/SKILL.md. Pass next_cursor back as cursor to continue.",
     "input_schema": {
       "type": "object",
       "properties": {
-        "scope": { "type": "string", "enum": ["project", "global"] },
+        "scope": { "type": "string", "enum": ["system", "project", "global"] },
         "package": { "type": "string" },
         "resource": { "type": "string" },
         "cursor": { "type": "string" }

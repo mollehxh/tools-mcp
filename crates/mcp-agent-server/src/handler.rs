@@ -155,7 +155,7 @@ impl AgentHandler {
 impl ServerHandler for AgentHandler {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "Five local coding and skill tools with fixed workspace-write authority",
+            "Five local coding and skill tools with fixed workspace-write authority. Discover the reserved built-in installer with skills.list scope system, then read exactly scope system, package skill-installer, resource skill://host/system/skill-installer/SKILL.md.",
         )
     }
 

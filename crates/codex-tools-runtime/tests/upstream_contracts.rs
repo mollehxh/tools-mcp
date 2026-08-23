@@ -144,7 +144,7 @@ fn skills_list_items_freeze_host_handles_and_source_metadata() {
     assert_eq!(properties["scope"]["type"], "string");
     assert_eq!(
         properties["scope"]["enum"],
-        serde_json::json!(["project", "global"])
+        serde_json::json!(["system", "project", "global"])
     );
     for field in ["package", "name", "description", "main_resource"] {
         assert_eq!(

@@ -1,3 +1,4 @@
+use crate::operations::{OperationError, ServerOperations, same_directory};
 use crate::roots::{CapabilitySnapshot, ManagedRoot, ManagedWriteScope};
 use cap_primitives::fs::FollowSymlinks;
 use cap_std::ambient_authority;
@@ -43,7 +44,48 @@ struct AuthorityInner {
     global_skills: ManagedRoot,
     staging: ManagedRoot,
     global_staging: ManagedRoot,
+    project_skill_anchor: SkillRootAnchor,
+    global_skill_anchor: SkillRootAnchor,
+    system_skill_anchor: Option<SkillRootAnchor>,
     capabilities: Option<Arc<CapabilitySnapshot>>,
+}
+
+#[derive(Debug)]
+struct SkillRootAnchor {
+    anchor: Dir,
+    components: Vec<std::ffi::OsString>,
+    identity_checks: Vec<(Vec<std::ffi::OsString>, Dir)>,
+}
+
+impl SkillRootAnchor {
+    fn new(
+        anchor: Dir,
+        components: Vec<std::ffi::OsString>,
+        identity_checks: Vec<(Vec<std::ffi::OsString>, Dir)>,
+    ) -> Self {
+        Self {
+            anchor,
+            components,
+            identity_checks,
+        }
+    }
+
+    fn reopen(&self) -> Result<ServerOperations, OperationError> {
+        let mut current = self.anchor.try_clone()?;
+        for component in &self.components {
+            current = open_dir_component_no_follow(&current, component)?;
+        }
+        for (components, expected) in &self.identity_checks {
+            let mut observed = current.try_clone()?;
+            for component in components {
+                observed = open_dir_component_no_follow(&observed, component)?;
+            }
+            if !same_directory(expected, &observed)? {
+                return Err(OperationError::InvalidPath);
+            }
+        }
+        Ok(ServerOperations::from_dir(current))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -87,13 +129,19 @@ impl WorkspaceAuthority {
             return Err(AuthorityError::InvalidPath);
         }
         let global_skills = absolute_lexically(global_skills.as_ref())?;
-        if roots_overlap(&workspace, &global_skills) {
+        let global_is_nested_workspace = global_skills.starts_with(&workspace);
+        if roots_overlap(&workspace, &global_skills)
+            && !(capabilities.is_some() && global_is_nested_workspace)
+        {
             return Err(AuthorityError::OverlappingRoots);
         }
 
         let workspace_dir = Dir::open_ambient_dir(&workspace, ambient_authority())
             .map_err(AuthorityError::Setup)?;
         let project_skills_path = workspace.join(".agents/skills");
+        if roots_overlap(&project_skills_path, &global_skills) {
+            return Err(AuthorityError::OverlappingRoots);
+        }
         let project_skills =
             open_or_create_relative_dir(&workspace_dir, Path::new(".agents/skills"))?;
         let staging_path = workspace.join(".mcp-agent/staging");
@@ -102,7 +150,7 @@ impl WorkspaceAuthority {
         let global_skills = global_skills
             .canonicalize()
             .map_err(AuthorityError::Setup)?;
-        if roots_overlap(&workspace, &global_skills) {
+        if roots_overlap(&workspace, &global_skills) && !global_is_nested_workspace {
             return Err(AuthorityError::OverlappingRoots);
         }
         let global_parent = global_skills.parent().ok_or(AuthorityError::InvalidPath)?;
@@ -111,6 +159,39 @@ impl WorkspaceAuthority {
         let global_staging =
             open_or_create_relative_dir(&global_parent_dir, Path::new(&global_staging_name))?;
         let global_staging_path = global_parent.join(global_staging_name);
+
+        let project_skill_anchor = SkillRootAnchor::new(
+            workspace_dir.try_clone().map_err(AuthorityError::Setup)?,
+            vec![
+                OsStr::new(".agents").to_os_string(),
+                OsStr::new("skills").to_os_string(),
+            ],
+            Vec::new(),
+        );
+        let global_skill_anchor = if global_is_nested_workspace {
+            SkillRootAnchor::new(
+                workspace_dir.try_clone().map_err(AuthorityError::Setup)?,
+                relative_components(&workspace, &global_skills)?,
+                Vec::new(),
+            )
+        } else {
+            SkillRootAnchor::new(
+                global_parent_dir
+                    .try_clone()
+                    .map_err(AuthorityError::Setup)?,
+                vec![
+                    global_skills
+                        .file_name()
+                        .ok_or(AuthorityError::InvalidPath)?
+                        .to_os_string(),
+                ],
+                Vec::new(),
+            )
+        };
+        let system_skill_anchor = capabilities
+            .as_ref()
+            .map(|snapshot| system_skill_anchor(snapshot.system_skills()))
+            .transpose()?;
 
         Ok(Self {
             inner: Arc::new(AuthorityInner {
@@ -132,6 +213,9 @@ impl WorkspaceAuthority {
                     ManagedWriteScope::ServerStaging,
                     global_staging,
                 ),
+                project_skill_anchor,
+                global_skill_anchor,
+                system_skill_anchor,
                 capabilities,
             }),
         })
@@ -174,9 +258,64 @@ impl WorkspaceAuthority {
         self.inner.capabilities.as_ref()
     }
 
+    pub fn open_project_skills(&self) -> Result<ServerOperations, OperationError> {
+        self.inner.project_skill_anchor.reopen()
+    }
+
+    pub fn open_global_skills(&self) -> Result<ServerOperations, OperationError> {
+        self.inner.global_skill_anchor.reopen()
+    }
+
+    pub fn open_system_skills(&self) -> Result<Option<ServerOperations>, OperationError> {
+        self.inner
+            .system_skill_anchor
+            .as_ref()
+            .map(SkillRootAnchor::reopen)
+            .transpose()
+    }
+
     pub(crate) fn try_clone_workspace_dir(&self) -> std::io::Result<Dir> {
         self.inner.workspace_dir.try_clone()
     }
+}
+
+fn relative_components(
+    base: &Path,
+    path: &Path,
+) -> Result<Vec<std::ffi::OsString>, AuthorityError> {
+    path.strip_prefix(base)
+        .map_err(|_| AuthorityError::InvalidPath)?
+        .components()
+        .map(|component| match component {
+            Component::Normal(name) => Ok(name.to_os_string()),
+            _ => Err(AuthorityError::InvalidPath),
+        })
+        .collect()
+}
+
+fn system_skill_anchor(path: &Path) -> Result<SkillRootAnchor, AuthorityError> {
+    let parent = path.parent().ok_or(AuthorityError::InvalidPath)?;
+    let name = path.file_name().ok_or(AuthorityError::InvalidPath)?;
+    let anchor = open_absolute_dir_no_follow(parent)?;
+    let expected_root =
+        open_dir_component_no_follow(&anchor, name).map_err(AuthorityError::Setup)?;
+    let mut identity_checks = vec![(
+        Vec::new(),
+        expected_root.try_clone().map_err(AuthorityError::Setup)?,
+    )];
+    match open_dir_component_no_follow(&expected_root, OsStr::new("skill-installer")) {
+        Ok(expected_package) => identity_checks.push((
+            vec![OsStr::new("skill-installer").to_os_string()],
+            expected_package,
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(AuthorityError::Setup(error)),
+    }
+    Ok(SkillRootAnchor::new(
+        anchor,
+        vec![name.to_os_string()],
+        identity_checks,
+    ))
 }
 
 fn global_staging_name(global_skills: &Path) -> String {

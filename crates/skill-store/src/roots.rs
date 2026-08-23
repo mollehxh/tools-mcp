@@ -1,5 +1,6 @@
 use crate::contracts::{HostSkillMetadata, ListedSkill, SkillScope};
 use crate::upstream::parse_skill_frontmatter_metadata;
+use mcp_agent_authority::release::verify_system_skills;
 use mcp_agent_authority::{
     ManagedEntryKind, ManagedFileReader, ServerOperations, WorkspaceAuthority,
 };
@@ -14,8 +15,7 @@ const MAX_DISCOVERY_WARNINGS: usize = 20;
 
 #[derive(Debug)]
 pub(crate) struct SkillRoots {
-    project: ServerOperations,
-    global: ServerOperations,
+    authority: WorkspaceAuthority,
 }
 
 #[derive(Debug)]
@@ -49,27 +49,33 @@ impl ScopeSnapshot {
 }
 
 impl SkillRoots {
-    pub fn new(
-        authority: &WorkspaceAuthority,
-    ) -> Result<Self, mcp_agent_authority::OperationError> {
-        Ok(Self {
-            project: ServerOperations::new(authority.project_skills())?,
-            global: ServerOperations::new(authority.global_skills())?,
-        })
+    pub fn new(authority: &WorkspaceAuthority) -> Self {
+        Self {
+            authority: authority.clone(),
+        }
     }
 
-    pub fn scan(&self, scope: SkillScope) -> ScopeSnapshot {
-        let root = self.operations(scope);
+    pub fn scan(&self, scope: SkillScope) -> Result<ScopeSnapshot, ()> {
+        let Some(root) = self.operations(scope)? else {
+            return Ok(if scope == SkillScope::System {
+                ScopeSnapshot::default()
+            } else {
+                ScopeSnapshot {
+                    warnings: vec!["The skill root could not be opened safely.".to_string()],
+                    ..ScopeSnapshot::default()
+                }
+            });
+        };
         let mut warnings = Vec::new();
         let mut entries = Vec::new();
         let mut packages = Vec::new();
         let Ok(mut root_entries) = root.read_root() else {
-            return ScopeSnapshot {
+            return Ok(ScopeSnapshot {
                 entries,
                 warnings: vec!["The skill root could not be read.".to_string()],
                 fingerprint: 0,
                 packages,
-            };
+            });
         };
         root_entries.sort_by(|left, right| left.name.cmp(&right.name));
 
@@ -148,13 +154,20 @@ impl SkillRoots {
             });
         }
 
-        finish_snapshot(entries, warnings, packages)
+        Ok(finish_snapshot(entries, warnings, packages))
     }
 
-    fn operations(&self, scope: SkillScope) -> &ServerOperations {
+    fn operations(&self, scope: SkillScope) -> Result<Option<ServerOperations>, ()> {
         match scope {
-            SkillScope::Project => &self.project,
-            SkillScope::Global => &self.global,
+            SkillScope::System => {
+                let operations = self.authority.open_system_skills().map_err(|_| ())?;
+                if let Some(operations) = &operations {
+                    verify_system_skills(operations).map_err(|_| ())?;
+                }
+                Ok(operations)
+            }
+            SkillScope::Project => Ok(self.authority.open_project_skills().ok()),
+            SkillScope::Global => Ok(self.authority.open_global_skills().ok()),
         }
     }
 }

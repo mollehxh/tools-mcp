@@ -1,7 +1,8 @@
 use crate::sandbox::{CAPABILITY_PROTOCOL, PINNED_CODEX_COMMIT};
+use crate::{ManagedEntryKind, ServerOperations};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::io::Read;
@@ -276,6 +277,99 @@ pub fn verify_release_assets(
         return Err(ReleaseError::ArtifactMismatch);
     }
     Ok(manifest)
+}
+
+/// Revalidates the packaged system-skill tree through an already opened,
+/// no-follow capability. This is intentionally narrower than release startup
+/// verification and is safe to run before every system catalog operation.
+pub fn verify_system_skills(root: &ServerOperations) -> Result<(), ReleaseError> {
+    let expected = REQUIRED_RELEASE_ARTIFACTS
+        .iter()
+        .filter(|artifact| artifact.kind == ReleaseArtifactKind::SystemSkill)
+        .map(|artifact| {
+            let relative = artifact
+                .path
+                .strip_prefix("system-skills/")
+                .ok_or(ReleaseError::ArtifactMismatch)?;
+            Ok((
+                relative,
+                artifact
+                    .expected_sha256
+                    .ok_or(ReleaseError::ArtifactMismatch)?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, ReleaseError>>()?;
+    let mut observed = BTreeMap::new();
+    collect_system_skill_files(root, "", &mut observed)?;
+    if observed.len() != expected.len()
+        || !observed
+            .keys()
+            .map(String::as_str)
+            .eq(expected.keys().copied())
+    {
+        return Err(ReleaseError::ArtifactMismatch);
+    }
+    for (path, digest) in observed {
+        if expected.get(path.as_str()) != Some(&digest.as_str()) {
+            return Err(ReleaseError::ArtifactMismatch);
+        }
+    }
+    Ok(())
+}
+
+fn collect_system_skill_files(
+    directory: &ServerOperations,
+    prefix: &str,
+    files: &mut BTreeMap<String, String>,
+) -> Result<(), ReleaseError> {
+    let mut entries = directory
+        .read_root()
+        .map_err(|_| ReleaseError::ArtifactMismatch)?;
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+    for entry in entries {
+        let name = entry.name.to_str().ok_or(ReleaseError::ArtifactMismatch)?;
+        let relative = if prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        match entry.kind {
+            ManagedEntryKind::Directory => {
+                let child = directory
+                    .open_directory(Path::new(name))
+                    .map_err(|_| ReleaseError::ArtifactMismatch)?;
+                collect_system_skill_files(&child, &relative, files)?;
+            }
+            ManagedEntryKind::RegularFile => {
+                let mut reader = directory
+                    .open_file(Path::new(name))
+                    .map_err(|_| ReleaseError::ArtifactMismatch)?;
+                let mut hasher = Sha256::new();
+                let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
+                let mut total = 0_u64;
+                loop {
+                    let read = reader
+                        .read(&mut buffer)
+                        .map_err(|_| ReleaseError::ArtifactMismatch)?;
+                    if read == 0 {
+                        break;
+                    }
+                    total = total
+                        .checked_add(
+                            u64::try_from(read).map_err(|_| ReleaseError::ArtifactMismatch)?,
+                        )
+                        .filter(|total| *total <= MAX_ARTIFACT_BYTES)
+                        .ok_or(ReleaseError::ArtifactMismatch)?;
+                    hasher.update(&buffer[..read]);
+                }
+                files.insert(relative, format!("{:x}", hasher.finalize()));
+            }
+            ManagedEntryKind::Symlink | ManagedEntryKind::Other => {
+                return Err(ReleaseError::ArtifactMismatch);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn verify_checksum_file(release: &Path, artifacts: &[ReleaseArtifact]) -> Result<(), ReleaseError> {

@@ -143,6 +143,10 @@ impl WorkspaceOperations {
 }
 
 impl ServerOperations {
+    pub(crate) fn from_dir(dir: Dir) -> Self {
+        Self { dir }
+    }
+
     pub fn new(root: &ManagedRoot) -> Result<Self, OperationError> {
         Ok(Self {
             dir: root.try_clone_dir()?,
@@ -376,7 +380,7 @@ impl ServerOperations {
     }
 }
 
-fn same_directory(left: &Dir, right: &Dir) -> Result<bool, OperationError> {
+pub(crate) fn same_directory(left: &Dir, right: &Dir) -> Result<bool, OperationError> {
     let left = left.dir_metadata()?;
     let right = right.dir_metadata()?;
     #[cfg(unix)]

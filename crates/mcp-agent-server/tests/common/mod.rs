@@ -1,11 +1,12 @@
 #![allow(dead_code)]
 
 use codex_tools_runtime::process::{OwnerId, ProcessManager};
-use mcp_agent_authority::WorkspaceAuthority;
 use mcp_agent_authority::sandbox::{Sandbox, expected_manifest};
+use mcp_agent_authority::{CapabilitySnapshot, WorkspaceAuthority};
 use mcp_agent_server::{AgentHandler, ApplicationContext};
 use skill_store::SkillCatalog;
 use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 
 pub struct Fixture {
@@ -19,14 +20,34 @@ impl Fixture {
     pub fn new() -> Self {
         let root = tempfile::tempdir().unwrap();
         let workspace = root.path().join("workspace");
-        let global = root.path().join("global-skills");
         let release = root.path().join("release");
-        for directory in [&workspace, &global, &release] {
+        let system_skills = release.join("system-skills");
+        let home = root.path().join("home");
+        let tmp = root.path().join("tmp");
+        for directory in [&workspace, &system_skills, &home, &tmp] {
             fs::create_dir_all(directory).unwrap();
         }
-        let authority =
-            WorkspaceAuthority::with_global_skills(&workspace, global.canonicalize().unwrap())
-                .unwrap();
+        copy_tree(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../third_party/openai-codex/skill-installer"),
+            &system_skills.join("skill-installer"),
+        );
+        let codex_home = home.join(".codex");
+        let capabilities = Arc::new(
+            CapabilitySnapshot::resolve_configured(
+                &workspace,
+                &system_skills,
+                |name| match name {
+                    "HOME" => Some(home.clone().into_os_string()),
+                    "CODEX_HOME" => Some(codex_home.clone().into_os_string()),
+                    _ => None,
+                },
+                tmp.clone(),
+                tmp,
+            )
+            .unwrap(),
+        );
+        let authority = WorkspaceAuthority::from_capabilities(capabilities).unwrap();
         expected_manifest()
             .unwrap()
             .write_release_relative(&release)
@@ -54,6 +75,19 @@ impl Fixture {
 
     pub fn handler(&self) -> AgentHandler {
         AgentHandler::new(Arc::clone(&self.context))
+    }
+}
+
+fn copy_tree(source: &Path, destination: &Path) {
+    fs::create_dir_all(destination).unwrap();
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let destination = destination.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &destination);
+        } else {
+            fs::copy(entry.path(), destination).unwrap();
+        }
     }
 }
 

@@ -112,15 +112,15 @@ provenance_exemption = "legacy boundary predates source-level adapter provenance
 symbol = "crate::contracts"
 local_path = "crates/skill-store/src/contracts.rs"
 status = "adapter"
-requirements = ["R7", "R9", "R16", "R17"]
+requirements = ["R7", "R9", "R14", "R16", "R17", "R19", "R20", "R21"]
 provenance_exemption = "legacy boundary predates source-level adapter provenance"
 
 [[boundaries]]
 symbol = "crate::catalog::SkillCatalog"
 local_path = "crates/skill-store/src/catalog.rs"
 status = "adapter"
-requirements = ["R2", "R3", "R7", "R8", "R9", "R15", "R16", "R17"]
-local_sha256 = "cdd23932d5f8ad14bd1e1edc2811d841fcf0b072f0d0b0cb36eb1b642040505e"
+requirements = ["R2", "R3", "R7", "R8", "R9", "R14", "R15", "R16", "R17", "R19", "R20", "R21"]
+local_sha256 = "8a022daf08760c77d6cf70806a13b736ba50b23d42c0f43cc0156ff94a825d88"
 
 [[boundaries.sources]]
 upstream_path = "codex-rs/ext/skills/src/tools/list.rs"
@@ -160,8 +160,8 @@ license = "Apache-2.0"
 symbol = "crate::roots"
 local_path = "crates/skill-store/src/roots.rs"
 status = "adapter"
-requirements = ["R7", "R8", "R9", "R15", "R16", "R17"]
-local_sha256 = "a4c1840a98158b083c58f3be623403a9f363f7ae02fb0acb60882d4b913ffd20"
+requirements = ["R7", "R8", "R9", "R14", "R15", "R16", "R17", "R19", "R20", "R21"]
+local_sha256 = "d68eea1100cc92216ce06eb996abc1df68f3a92f94c5449c0f2cb1604dcfc7e3"
 
 [[boundaries.sources]]
 upstream_path = "codex-rs/ext/skills/src/host_roots.rs"
@@ -177,8 +177,8 @@ license = "Apache-2.0"
 symbol = "crate::precedence"
 local_path = "crates/skill-store/src/precedence.rs"
 status = "adapter"
-requirements = ["R7", "R8", "R9", "R15"]
-local_sha256 = "1a209854fcfe881dbbc22ec351e958a518ea9de481c783b8b80aea918266d230"
+requirements = ["R7", "R8", "R9", "R14", "R15", "R19"]
+local_sha256 = "b9c5f689f0eada82ec0f229ee3bbabecaa50f6826106e400b6bf59c9b34a7a90"
 
 [[boundaries.sources]]
 upstream_path = "codex-rs/ext/skills/src/loader/host_merge.rs"
@@ -261,9 +261,9 @@ upstream_path = "normalized-contracts/tool-contracts-v1"
 module = "fixture::tool_contracts"
 status = "adapted"
 source_sha256 = "cb2253251f7ac4ec02263f7050118d500b4c8603a07e9b871f64ca963df508bf"
-local_sha256 = "f7d25e02c41222acab8d5333c9a3d976a5e9f64de32caac5c45696ae3a5ced2c"
+local_sha256 = "9ed57eb6fdb61548bc2c6faef5c621ae5077611b8f3be80074ffa4e5bf204dbb"
 license = "Apache-2.0"
-requirements = ["R2", "R3", "R6", "R7", "R8", "R9"]
+requirements = ["R2", "R3", "R6", "R7", "R8", "R9", "R14", "R19", "R20", "R21"]
 baseline_path = "tests/conformance/fixtures/pinned-upstream-tool-contracts.json"
 delta_registry_path = "tests/conformance/fixtures/compatibility-deltas.json"
 
@@ -273,9 +273,9 @@ upstream_path = "normalized-contracts/tool-contract-deltas-v2"
 module = "fixture::compatibility_deltas"
 status = "registry"
 source_sha256 = "7ec8e03fa3d3942138c567386985c8ef7b490b6ced0b3eb4891d8f5429057f4b"
-local_sha256 = "7ec8e03fa3d3942138c567386985c8ef7b490b6ced0b3eb4891d8f5429057f4b"
+local_sha256 = "6012d3f87bc8ef2a21e62c20902c29c95e0a13870d2118e806adb1daf9428911"
 license = "Apache-2.0"
-requirements = ["R2", "R3", "R6", "R7", "R8", "R9"]
+requirements = ["R2", "R3", "R6", "R7", "R8", "R9", "R14", "R19", "R20", "R21"]
 
 [[files]]
 local_path = "third_party/openai-codex/skill-installer/SKILL.md"

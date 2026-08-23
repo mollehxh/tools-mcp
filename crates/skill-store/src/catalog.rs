@@ -43,10 +43,13 @@ pub enum SkillStoreError {
     Serialization(#[source] serde_json::Error),
     #[error("skill catalog state is unavailable")]
     StateUnavailable,
+    #[error("packaged system skills failed identity or digest verification")]
+    SystemVerification,
 }
 
 #[derive(Debug, Default)]
 struct CatalogState {
+    system: ScopeSnapshot,
     project: ScopeSnapshot,
     global: ScopeSnapshot,
 }
@@ -66,7 +69,7 @@ impl SkillCatalog {
     /// Returns an error when the authority capabilities cannot be cloned or
     /// the catalog state cannot be initialized.
     pub fn new(authority: &WorkspaceAuthority) -> Result<Self, SkillStoreError> {
-        let roots = SkillRoots::new(authority).map_err(|_| SkillStoreError::AuthoritySetup)?;
+        let roots = SkillRoots::new(authority);
         let catalog = Self {
             roots,
             state: Mutex::new(CatalogState::default()),
@@ -83,7 +86,7 @@ impl SkillCatalog {
     /// Returns an error for invalid or stale cursors, unavailable catalog
     /// state, or a response that cannot fit the pinned limit.
     pub fn list(&self, input: &SkillListInput) -> Result<SkillListOutput, SkillStoreError> {
-        self.reconcile()?;
+        self.reconcile_scope(input.scope)?;
         let state = self
             .state
             .lock()
@@ -139,7 +142,7 @@ impl SkillCatalog {
     pub fn read(&self, input: &SkillReadInput) -> Result<SkillReadOutput, SkillStoreError> {
         crate::resource::validate_handle("package", &input.package)?;
         crate::resource::validate_handle("resource", &input.resource)?;
-        self.reconcile()?;
+        self.reconcile_scope(input.scope)?;
         self.read_reconciled(input)
     }
 
@@ -168,7 +171,7 @@ impl SkillCatalog {
     ) -> Result<SkillReadOutput, SkillStoreError> {
         crate::resource::validate_handle("package", &input.package)?;
         crate::resource::validate_handle("resource", &input.resource)?;
-        self.reconcile()?;
+        self.reconcile_scope(input.scope)?;
         after_reconcile();
         self.read_reconciled(input)
     }
@@ -184,7 +187,13 @@ impl SkillCatalog {
             .state
             .lock()
             .map_err(|_| SkillStoreError::StateUnavailable)?;
-        Ok(precedence::resolve_name(&state.project.entries, &state.global.entries, name).cloned())
+        Ok(precedence::resolve_name(
+            &state.system.entries,
+            &state.project.entries,
+            &state.global.entries,
+            name,
+        )
+        .cloned())
     }
 
     #[must_use]
@@ -193,16 +202,24 @@ impl SkillCatalog {
     }
 
     fn reconcile(&self) -> Result<(), SkillStoreError> {
-        let project = self.roots.scan(SkillScope::Project);
-        let global = self.roots.scan(SkillScope::Global);
+        for scope in [SkillScope::System, SkillScope::Project, SkillScope::Global] {
+            self.reconcile_scope(scope)?;
+        }
+        Ok(())
+    }
+
+    fn reconcile_scope(&self, scope: SkillScope) -> Result<(), SkillStoreError> {
+        let refreshed = self.roots.scan(scope).map_err(|()| match scope {
+            SkillScope::System => SkillStoreError::SystemVerification,
+            SkillScope::Project | SkillScope::Global => SkillStoreError::AuthoritySetup,
+        })?;
         let mut state = self
             .state
             .lock()
             .map_err(|_| SkillStoreError::StateUnavailable)?;
-        let contents_changed = state.project.fingerprint != project.fingerprint
-            || state.global.fingerprint != global.fingerprint;
-        state.project = project;
-        state.global = global;
+        let current = snapshot_mut(&mut state, scope);
+        let contents_changed = current.fingerprint != refreshed.fingerprint;
+        *current = refreshed;
         if contents_changed {
             self.generation.fetch_add(1, Ordering::AcqRel);
         }
@@ -210,8 +227,17 @@ impl SkillCatalog {
     }
 }
 
+fn snapshot_mut(state: &mut CatalogState, scope: SkillScope) -> &mut ScopeSnapshot {
+    match scope {
+        SkillScope::System => &mut state.system,
+        SkillScope::Project => &mut state.project,
+        SkillScope::Global => &mut state.global,
+    }
+}
+
 fn snapshot(state: &CatalogState, scope: SkillScope) -> &ScopeSnapshot {
     match scope {
+        SkillScope::System => &state.system,
         SkillScope::Project => &state.project,
         SkillScope::Global => &state.global,
     }

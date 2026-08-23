@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SkillScope {
+    System,
     Project,
     Global,
 }
@@ -16,6 +17,7 @@ pub enum SkillAuthority {
 impl SkillScope {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
+            Self::System => "system",
             Self::Project => "project",
             Self::Global => "global",
         }
