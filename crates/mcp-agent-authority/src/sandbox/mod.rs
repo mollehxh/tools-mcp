@@ -9,12 +9,13 @@ mod windows;
 use crate::{AuthorityError, CapabilitySnapshot, WorkspaceAuthority};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::fs;
 use std::fs::File;
 use std::io::Read;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output};
 use std::sync::Arc;
 
@@ -85,8 +86,7 @@ pub struct Sandbox {
     manifest: SandboxManifest,
     manifest_sha256: String,
     backend: Arc<VerifiedBackend>,
-    reexec: Option<Arc<VerifiedBackend>>,
-    reexec_token: Option<Arc<str>>,
+    reexec: Option<ReexecAuthority>,
 }
 
 /// A sandbox that has passed the native read/write/network startup proof.
@@ -110,6 +110,12 @@ struct VerifiedBackend {
     file: File,
     path: PathBuf,
     identity: FileIdentity,
+}
+
+#[derive(Clone, Debug)]
+struct ReexecAuthority {
+    adapter: Arc<VerifiedBackend>,
+    token: Arc<str>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -215,7 +221,6 @@ impl Sandbox {
             manifest_sha256: digest(&bytes),
             backend,
             reexec: None,
-            reexec_token: None,
         })
     }
 
@@ -231,12 +236,14 @@ impl Sandbox {
         let executable = executable.canonicalize()?;
         let file = open_verified_file(&executable, true)?;
         let identity = FileIdentity::from_metadata(&file.metadata()?);
-        sandbox.reexec = Some(Arc::new(VerifiedBackend {
-            file,
-            path: executable,
-            identity,
-        }));
-        sandbox.reexec_token = Some(Arc::from(random_reexec_token()?));
+        sandbox.reexec = Some(ReexecAuthority {
+            adapter: Arc::new(VerifiedBackend {
+                file,
+                path: executable,
+                identity,
+            }),
+            token: Arc::from(random_reexec_token()?),
+        });
         Ok(sandbox)
     }
 
@@ -246,6 +253,20 @@ impl Sandbox {
         return macos::render_policy(self);
         #[cfg(not(target_os = "macos"))]
         Ok(String::from_utf8_lossy(native_policy_bytes()).into_owned())
+    }
+
+    fn writable_roots(&self) -> Result<Cow<'_, [PathBuf]>, SandboxError> {
+        let roots = self.authority.capabilities().map_or_else(
+            || Cow::Owned(vec![self.authority.workspace_root().to_path_buf()]),
+            |capabilities| Cow::Borrowed(capabilities.writable_roots()),
+        );
+        if roots.is_empty() {
+            Err(SandboxError::Preflight(
+                "sandbox has no writable capability roots".to_owned(),
+            ))
+        } else {
+            Ok(roots)
+        }
     }
 
     pub fn preflight(self) -> Result<(VerifiedSandbox, PreflightReceipt), SandboxError> {
@@ -292,15 +313,15 @@ impl Sandbox {
         self.reverify()?;
         let args = args.iter().map(String::as_str).collect::<Vec<_>>();
         let command = platform_command(self, &self.backend.launch_path(), program, &args, cwd)?;
-        match (&self.reexec, &self.reexec_token) {
-            (Some(adapter), Some(token)) => {
-                adapter.reverify()?;
-                Ok(wrap_with_reexec(&command, &adapter.path, token))
-            }
-            (None, None) => Ok(command),
-            _ => Err(SandboxError::ChildAdapter(
-                "incomplete reexec authority".to_owned(),
-            )),
+        if let Some(reexec) = &self.reexec {
+            reexec.adapter.reverify()?;
+            Ok(wrap_with_reexec(
+                &command,
+                &reexec.adapter.path,
+                &reexec.token,
+            ))
+        } else {
+            Ok(command)
         }
     }
 
@@ -324,13 +345,13 @@ impl Sandbox {
 /// parsing. A successful dispatch replaces the process image and never
 /// returns. Direct, malformed, or recursive selection fails closed.
 #[doc(hidden)]
-pub fn dispatch_internal_sandbox_child() -> Result<bool, SandboxError> {
+pub fn dispatch_internal_sandbox_child() -> Result<(), SandboxError> {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     if arguments
         .first()
         .is_none_or(|value| value != INTERNAL_SANDBOX_CHILD_FLAG)
     {
-        return Ok(false);
+        return Ok(());
     }
     let token = std::env::var_os(INTERNAL_SANDBOX_TOKEN_ENV);
     let guarded = std::env::var_os(INTERNAL_SANDBOX_GUARD_ENV).is_some();
@@ -468,7 +489,7 @@ impl VerifiedSandbox {
     }
 
     #[must_use]
-    pub fn capabilities(&self) -> Option<&Arc<CapabilitySnapshot>> {
+    pub fn capabilities(&self) -> Option<&CapabilitySnapshot> {
         self.sandbox.authority.capabilities()
     }
 
@@ -620,15 +641,7 @@ fn current_target() -> String {
 }
 
 fn validate_relative_asset(path: &Path) -> Result<(), SandboxError> {
-    if path.is_absolute()
-        || path.as_os_str().is_empty()
-        || path
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return Err(SandboxError::ManifestInvalid);
-    }
-    Ok(())
+    crate::operations::validate_relative(path).map_err(|_| SandboxError::ManifestInvalid)
 }
 
 fn verify_file_digest(path: &Path, expected: &str, max_bytes: u64) -> Result<(), SandboxError> {

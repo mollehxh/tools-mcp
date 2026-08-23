@@ -243,16 +243,12 @@ fn server_operations_are_handle_relative_no_follow_and_atomic() {
 }
 
 #[test]
-fn global_capability_is_outside_workspace_but_staging_is_workspace_writable() {
+fn global_capability_is_outside_workspace() {
     let fixture = conformance::Fixture::new();
     let authority = fixture.authority();
     assert_eq!(
         authority.global_skills().scope(),
         ManagedWriteScope::GlobalSkills
-    );
-    assert_eq!(
-        authority.staging().scope(),
-        ManagedWriteScope::ServerStaging
     );
     assert!(
         authority
@@ -260,24 +256,12 @@ fn global_capability_is_outside_workspace_but_staging_is_workspace_writable() {
             .root()
             .starts_with(fixture.outside.canonicalize().unwrap())
     );
-    assert!(
-        authority
-            .staging()
-            .root()
-            .starts_with(fixture.workspace.canonicalize().unwrap())
-    );
     assert!(matches!(
         authority
             .command()
             .authorize_write(authority.global_skills().root()),
         Err(AuthorityError::OutsideWorkspace)
     ));
-    assert!(
-        authority
-            .command()
-            .authorize_write(authority.staging().root())
-            .is_ok()
-    );
 }
 
 #[test]

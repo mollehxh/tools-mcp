@@ -140,7 +140,7 @@ impl InstallerFixture {
 
         let global = exec(
             client,
-            &install_command("global-ok", None, None),
+            &install_command(&["global-ok"], None, None),
             10_000,
             false,
         )
@@ -158,7 +158,7 @@ impl InstallerFixture {
         let project_root = self.workspace.join(".agents/skills");
         let project = exec(
             client,
-            &install_command("project-ok", Some(&project_root), None),
+            &install_command(&["project-ok"], Some(&project_root), None),
             10_000,
             false,
         )
@@ -175,7 +175,7 @@ impl InstallerFixture {
 
         let collision = exec(
             client,
-            &install_command("global-ok", None, None),
+            &install_command(&["global-ok"], None, None),
             10_000,
             false,
         )
@@ -192,7 +192,7 @@ impl InstallerFixture {
 
         let yielded = exec(
             client,
-            &install_command("yielded-ok", None, Some("1")),
+            &install_command(&["yielded-ok"], None, Some("1")),
             100,
             false,
         )
@@ -217,7 +217,11 @@ impl InstallerFixture {
 
         let partial = exec(
             client,
-            &install_multiple_command(&["partial-ok", "missing-skill-md"], Some(&project_root)),
+            &install_command(
+                &["partial-ok", "missing-skill-md"],
+                Some(&project_root),
+                None,
+            ),
             10_000,
             false,
         )
@@ -236,7 +240,7 @@ impl InstallerFixture {
 
         let interrupted = exec(
             client,
-            &install_command("interrupted", None, Some("30")),
+            &install_command(&["interrupted"], None, Some("30")),
             100,
             false,
         )
@@ -266,7 +270,7 @@ impl InstallerFixture {
         assert_completed(
             &exec(
                 client,
-                &install_command("recreated-global", None, None),
+                &install_command(&["recreated-global"], None, None),
                 10_000,
                 false,
             )
@@ -277,7 +281,7 @@ impl InstallerFixture {
         assert_completed(
             &exec(
                 client,
-                &install_command("recreated-project", Some(&project_root), None),
+                &install_command(&["recreated-project"], Some(&project_root), None),
                 10_000,
                 false,
             )
@@ -475,28 +479,15 @@ async fn call(
         .context("packaged tool omitted structured content")
 }
 
-fn install_command(skill: &str, destination: Option<&Path>, delay: Option<&str>) -> String {
+fn install_command(skills: &[&str], destination: Option<&Path>, delay: Option<&str>) -> String {
     let mut command = delay.map_or_else(String::new, |seconds| {
         format!(
             "MCP_INSTALLER_GIT_DELAY={} ",
             shell_quote(Path::new(seconds))
         )
     });
-    command.push_str(INSTALLER);
-    write!(
-        command,
-        " --repo {FIXTURE_REPOSITORY} --path skills/{skill} --method git"
-    )
-    .expect("writing to String cannot fail");
-    if let Some(destination) = destination {
-        command.push_str(" --dest ");
-        command.push_str(&shell_quote(destination));
-    }
-    command
-}
-
-fn install_multiple_command(skills: &[&str], destination: Option<&Path>) -> String {
-    let mut command = format!("{INSTALLER} --repo {FIXTURE_REPOSITORY} --path");
+    write!(command, "{INSTALLER} --repo {FIXTURE_REPOSITORY} --path")
+        .expect("writing to String cannot fail");
     for skill in skills {
         command.push_str(" skills/");
         command.push_str(skill);

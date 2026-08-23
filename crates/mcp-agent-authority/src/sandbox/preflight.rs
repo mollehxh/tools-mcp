@@ -17,7 +17,7 @@ pub struct PreflightReceipt {
     pub outside_read_allowed: bool,
     pub local_service_allowed: bool,
     pub listener_bind_allowed: bool,
-    pub workspace_write_allowed: bool,
+    pub writable_roots_write_allowed: bool,
     pub writable_roots_checked: usize,
     pub descendant_write_allowed: bool,
     pub outside_write_denied: bool,
@@ -25,20 +25,12 @@ pub struct PreflightReceipt {
 }
 
 pub(super) fn run(sandbox: &Sandbox) -> Result<PreflightReceipt, SandboxError> {
-    let roots = sandbox.authority.capabilities().map_or_else(
-        || vec![sandbox.authority.workspace_root().to_path_buf()],
-        |capabilities| capabilities.writable_roots().to_vec(),
-    );
-    if roots.is_empty() {
-        return Err(SandboxError::Preflight(
-            "sandbox has no writable capability roots".to_owned(),
-        ));
-    }
+    let roots = sandbox.writable_roots()?;
 
     let mut root_writes_allowed = true;
     let mut descendant_write_allowed = true;
-    for root in &roots {
-        let probe = OwnedWorkspaceProbe::reserve(root)?;
+    for root in roots.iter() {
+        let probe = OwnedWritableRootProbe::reserve(root)?;
         let direct = platform_write(sandbox, probe.probe_path());
         let descendant = platform_descendant_write(sandbox, probe.descendant_probe_path());
         let cleanup = probe.cleanup();
@@ -82,7 +74,7 @@ pub(super) fn run(sandbox: &Sandbox) -> Result<PreflightReceipt, SandboxError> {
         outside_read_allowed: read.status.success() && read.stdout == original,
         local_service_allowed,
         listener_bind_allowed,
-        workspace_write_allowed: root_writes_allowed,
+        writable_roots_write_allowed: root_writes_allowed,
         writable_roots_checked: roots.len(),
         descendant_write_allowed,
         outside_write_denied: !canary_write_succeeded && canary_unchanged,
@@ -91,8 +83,7 @@ pub(super) fn run(sandbox: &Sandbox) -> Result<PreflightReceipt, SandboxError> {
     if receipt.outside_read_allowed
         && receipt.local_service_allowed
         && receipt.listener_bind_allowed
-        && receipt.workspace_write_allowed
-        && receipt.writable_roots_checked == roots.len()
+        && receipt.writable_roots_write_allowed
         && receipt.descendant_write_allowed
         && receipt.outside_write_denied
         && receipt.release_canary_verified
@@ -124,10 +115,10 @@ fn accept_loopback_connection(
     }
 }
 
-/// A one-shot workspace write target that is atomically reserved by this
+/// A one-shot writable-root target that is atomically reserved by this
 /// preflight. The child writes only below this directory, never to a fixed
 /// project path. Cleanup requires the random owner marker and never recurses.
-struct OwnedWorkspaceProbe {
+struct OwnedWritableRootProbe {
     directory: PathBuf,
     marker: PathBuf,
     probe: PathBuf,
@@ -137,11 +128,11 @@ struct OwnedWorkspaceProbe {
     token: Vec<u8>,
 }
 
-impl OwnedWorkspaceProbe {
-    fn reserve(workspace: &Path) -> Result<Self, SandboxError> {
+impl OwnedWritableRootProbe {
+    fn reserve(root: &Path) -> Result<Self, SandboxError> {
         for _ in 0..128 {
             let token = unique_token();
-            let directory = workspace.join(format!(".mcp-agent-preflight-{token}"));
+            let directory = root.join(format!(".mcp-agent-preflight-{token}"));
             match fs::create_dir(&directory) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -406,7 +397,7 @@ fn shell_quote_text(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{OwnedWorkspaceProbe, accept_loopback_connection};
+    use super::{OwnedWritableRootProbe, accept_loopback_connection};
     use std::fs;
     use std::net::TcpListener;
     use std::time::{Duration, Instant};
@@ -417,7 +408,7 @@ mod tests {
         let fixed_path = workspace.path().join(".mcp-agent-preflight");
         fs::write(&fixed_path, b"project data").unwrap();
 
-        let probe = OwnedWorkspaceProbe::reserve(workspace.path()).unwrap();
+        let probe = OwnedWritableRootProbe::reserve(workspace.path()).unwrap();
         assert_ne!(probe.probe_path(), fixed_path);
         probe.cleanup().unwrap();
 
@@ -427,7 +418,7 @@ mod tests {
     #[test]
     fn cleanup_leaves_a_reservation_with_a_replaced_owner_marker() {
         let workspace = tempfile::tempdir().unwrap();
-        let probe = OwnedWorkspaceProbe::reserve(workspace.path()).unwrap();
+        let probe = OwnedWritableRootProbe::reserve(workspace.path()).unwrap();
         let directory = probe.directory.clone();
         fs::write(&probe.marker, b"different owner").unwrap();
 

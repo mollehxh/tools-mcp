@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::AuthorityError;
+use crate::workspace::roots_overlap;
 
 /// A server-owned filesystem root. Possessing this value is the authority to
 /// perform managed writes beneath the root; command children never receive it.
@@ -20,7 +21,6 @@ pub struct ManagedRoot {
 pub enum ManagedWriteScope {
     ProjectSkills,
     GlobalSkills,
-    ServerStaging,
 }
 
 /// Canonical startup paths and workload environment fixed for the server's
@@ -308,10 +308,6 @@ fn dedupe_roots(roots: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
         }
         deduped
     })
-}
-
-fn roots_overlap(left: &Path, right: &Path) -> bool {
-    left.starts_with(right) || right.starts_with(left)
 }
 
 fn insert_path(

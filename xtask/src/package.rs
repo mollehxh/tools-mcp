@@ -2,7 +2,8 @@ use anyhow::{Context, ensure};
 use flate2::{Compression, GzBuilder};
 use mcp_agent_authority::release::{
     RELEASE_CHECKSUMS_FILE, RELEASE_MANIFEST_FILE, REQUIRED_RELEASE_ARTIFACTS, ReleaseArtifact,
-    ReleaseArtifactSpec, ReleaseManifest, current_release_target, verify_release_assets,
+    ReleaseArtifactKind, ReleaseArtifactSpec, ReleaseManifest, current_release_target,
+    verify_release_assets,
 };
 use mcp_agent_authority::sandbox::{CAPABILITY_PROTOCOL, PINNED_CODEX_COMMIT, expected_manifest};
 use sha2::{Digest, Sha256};
@@ -194,20 +195,18 @@ pub fn assemble(options: &PackageOptions) -> anyhow::Result<PackageResult> {
 }
 
 fn copy_system_skill(repository: &Path, release: &Path) -> anyhow::Result<()> {
-    for relative in [
-        "LICENSE.txt",
-        "SKILL.md",
-        "agents/openai.yaml",
-        "assets/skill-installer-small.svg",
-        "assets/skill-installer.png",
-        "scripts/github_utils.py",
-        "scripts/install-skill-from-github.py",
-    ] {
+    for spec in REQUIRED_RELEASE_ARTIFACTS
+        .iter()
+        .filter(|spec| spec.kind == ReleaseArtifactKind::SystemSkill)
+    {
+        let relative = Path::new(spec.path)
+            .strip_prefix("system-skills/skill-installer")
+            .context("system skill artifact escaped the packaged installer root")?;
         copy_file(
             &repository
                 .join("third_party/openai-codex/skill-installer")
                 .join(relative),
-            &release.join("system-skills/skill-installer").join(relative),
+            &release.join(spec.path),
         )?;
     }
     Ok(())
@@ -337,9 +336,7 @@ fn copy_file(source: &Path, destination: &Path) -> anyhow::Result<()> {
 
 #[cfg(unix)]
 pub(crate) fn set_executable(path: &Path) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
-    Ok(())
+    set_mode(path, 0o755)
 }
 
 #[cfg(not(unix))]

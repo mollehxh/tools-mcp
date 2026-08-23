@@ -418,7 +418,7 @@ impl Seek for ManagedFileReader {
     }
 }
 
-fn validate_relative(path: &Path) -> Result<(), OperationError> {
+pub(crate) fn validate_relative(path: &Path) -> Result<(), OperationError> {
     if path.is_absolute() || path.as_os_str().is_empty() {
         return Err(OperationError::InvalidPath);
     }

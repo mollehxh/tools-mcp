@@ -3,9 +3,7 @@ use crate::roots::{CapabilitySnapshot, ManagedRoot, ManagedWriteScope};
 use cap_primitives::fs::FollowSymlinks;
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir, OpenOptions};
-use sha2::{Digest, Sha256};
 use std::ffi::OsStr;
-use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
@@ -42,8 +40,6 @@ struct AuthorityInner {
     workspace_dir: Dir,
     project_skills: ManagedRoot,
     global_skills: ManagedRoot,
-    staging: ManagedRoot,
-    global_staging: ManagedRoot,
     project_skill_anchor: SkillRootAnchor,
     global_skill_anchor: SkillRootAnchor,
     system_skill_anchor: Option<SkillRootAnchor>,
@@ -144,8 +140,6 @@ impl WorkspaceAuthority {
         }
         let project_skills =
             open_or_create_relative_dir(&workspace_dir, Path::new(".agents/skills"))?;
-        let staging_path = workspace.join(".mcp-agent/staging");
-        let staging = open_or_create_relative_dir(&workspace_dir, Path::new(".mcp-agent/staging"))?;
         let global_dir = open_absolute_dir_no_follow(&global_skills)?;
         let global_skills = global_skills
             .canonicalize()
@@ -155,11 +149,6 @@ impl WorkspaceAuthority {
         }
         let global_parent = global_skills.parent().ok_or(AuthorityError::InvalidPath)?;
         let global_parent_dir = open_absolute_dir_no_follow(global_parent)?;
-        let global_staging_name = global_staging_name(&global_skills);
-        let global_staging =
-            open_or_create_relative_dir(&global_parent_dir, Path::new(&global_staging_name))?;
-        let global_staging_path = global_parent.join(global_staging_name);
-
         let project_skill_anchor = SkillRootAnchor::new(
             workspace_dir.try_clone().map_err(AuthorityError::Setup)?,
             vec![
@@ -207,12 +196,6 @@ impl WorkspaceAuthority {
                     ManagedWriteScope::GlobalSkills,
                     global_dir,
                 ),
-                staging: ManagedRoot::new(staging_path, ManagedWriteScope::ServerStaging, staging),
-                global_staging: ManagedRoot::new(
-                    global_staging_path,
-                    ManagedWriteScope::ServerStaging,
-                    global_staging,
-                ),
                 project_skill_anchor,
                 global_skill_anchor,
                 system_skill_anchor,
@@ -244,18 +227,8 @@ impl WorkspaceAuthority {
     }
 
     #[must_use]
-    pub fn staging(&self) -> &ManagedRoot {
-        &self.inner.staging
-    }
-
-    #[must_use]
-    pub fn global_staging(&self) -> &ManagedRoot {
-        &self.inner.global_staging
-    }
-
-    #[must_use]
-    pub fn capabilities(&self) -> Option<&Arc<CapabilitySnapshot>> {
-        self.inner.capabilities.as_ref()
+    pub fn capabilities(&self) -> Option<&CapabilitySnapshot> {
+        self.inner.capabilities.as_deref()
     }
 
     pub fn open_project_skills(&self) -> Result<ServerOperations, OperationError> {
@@ -316,17 +289,6 @@ fn system_skill_anchor(path: &Path) -> Result<SkillRootAnchor, AuthorityError> {
         vec![name.to_os_string()],
         identity_checks,
     ))
-}
-
-fn global_staging_name(global_skills: &Path) -> String {
-    let digest = Sha256::digest(global_skills.to_string_lossy().as_bytes());
-    let suffix = digest[..8]
-        .iter()
-        .fold(String::with_capacity(16), |mut suffix, byte| {
-            write!(suffix, "{byte:02x}").expect("writing to String cannot fail");
-            suffix
-        });
-    format!(".mcp-agent-skill-staging-{suffix}")
 }
 
 fn default_global_skills() -> Result<PathBuf, AuthorityError> {
@@ -520,7 +482,7 @@ fn verify_existing_ancestor(workspace: &Path, path: &Path) -> Result<(), Authori
     }
 }
 
-fn roots_overlap(left: &Path, right: &Path) -> bool {
+pub(crate) fn roots_overlap(left: &Path, right: &Path) -> bool {
     left.starts_with(right) || right.starts_with(left)
 }
 

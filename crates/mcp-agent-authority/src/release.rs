@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::io::Read;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 pub const RELEASE_MANIFEST_FILE: &str = "release-manifest.json";
 pub const RELEASE_CHECKSUMS_FILE: &str = "SHA256SUMS";
@@ -448,16 +448,8 @@ fn file_mode(_metadata: &fs::Metadata) -> u32 {
 }
 
 fn validate_relative(path: &str) -> Result<(), ReleaseError> {
-    let path = Path::new(path);
-    if path.is_absolute()
-        || path.as_os_str().is_empty()
-        || path
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return Err(ReleaseError::ArtifactMismatch);
-    }
-    Ok(())
+    crate::operations::validate_relative(Path::new(path))
+        .map_err(|_| ReleaseError::ArtifactMismatch)
 }
 
 fn reject_symlink_components(release: &Path, relative: &Path) -> Result<(), ReleaseError> {

@@ -518,7 +518,7 @@ impl ProcessManager {
             .filter(|path| !path.is_empty())
             .map_or_else(|| PathBuf::from("."), PathBuf::from);
 
-        let capabilities = self.inner.sandbox.capabilities().cloned();
+        let capabilities = self.inner.sandbox.capabilities();
 
         #[cfg(windows)]
         let (shell, args) = {

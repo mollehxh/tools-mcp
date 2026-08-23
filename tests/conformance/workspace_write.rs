@@ -21,7 +21,7 @@ impl Fixture {
             workspace.join("src"),
             workspace.join(".git"),
             workspace.join(".codex"),
-            workspace.join(".mcp-agent/staging"),
+            workspace.join(".mcp-agent"),
             workspace.join(".agents/skills"),
             global_skills.clone(),
         ] {

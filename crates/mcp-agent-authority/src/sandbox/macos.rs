@@ -29,15 +29,7 @@ pub(super) const POLICY: &str = r#"(version 1)
 "#;
 
 pub(super) fn render_policy(sandbox: &Sandbox) -> Result<String, SandboxError> {
-    let roots = sandbox.authority.capabilities().map_or_else(
-        || vec![sandbox.authority.workspace_root().to_path_buf()],
-        |capabilities| capabilities.writable_roots().to_vec(),
-    );
-    if roots.is_empty() {
-        return Err(SandboxError::Preflight(
-            "sandbox has no writable capability roots".to_owned(),
-        ));
-    }
+    let roots = sandbox.writable_roots()?;
     let rules = roots
         .iter()
         .enumerate()
@@ -56,10 +48,7 @@ pub(super) fn command(
     cwd: &Path,
 ) -> Result<Command, SandboxError> {
     let policy = render_policy(sandbox)?;
-    let roots = sandbox.authority.capabilities().map_or_else(
-        || vec![sandbox.authority.workspace_root().to_path_buf()],
-        |capabilities| capabilities.writable_roots().to_vec(),
-    );
+    let roots = sandbox.writable_roots()?;
     let mut command = Command::new(launcher);
     command.arg("-p").arg(policy);
     for (index, root) in roots.iter().enumerate() {

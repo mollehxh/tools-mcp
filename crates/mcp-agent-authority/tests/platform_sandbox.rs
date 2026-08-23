@@ -215,7 +215,7 @@ fn native_packaged_clean_install_preflight_proves_required_capabilities() {
 
     assert!(receipt.outside_read_allowed);
     assert!(receipt.local_service_allowed);
-    assert!(receipt.workspace_write_allowed);
+    assert!(receipt.writable_roots_write_allowed);
     assert!(receipt.outside_write_denied);
     assert_eq!(sandbox.preflight_receipt(), &receipt);
     assert!(receipt.listener_bind_allowed);
