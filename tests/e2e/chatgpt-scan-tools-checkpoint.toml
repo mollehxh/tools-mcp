@@ -1,6 +1,6 @@
 version = 2
 status = "pending"
-required_before = "U7"
+required_before = "release"
 endpoint_kind = "temporary_ngrok_https"
 client = "ChatGPT developer mode / Scan Tools"
 expected_tools = [
@@ -11,4 +11,4 @@ expected_tools = [
   "skills.read",
 ]
 observed_at = ""
-notes = "Protocol v2 removes skills.install. A fresh ChatGPT Developer Mode scan of the five-tool surface remains required before U7."
+notes = "Protocol v2 removes skills.install. Automated Inspector and conformance do not substitute for a fresh ChatGPT Developer Mode scan; this pending manual checkpoint blocks release signoff, not automated U7 verification."

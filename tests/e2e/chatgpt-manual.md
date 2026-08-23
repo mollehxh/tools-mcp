@@ -14,7 +14,9 @@ authority, and redacted result IDs with the release record.
 - [ ] Verify the packaged archive and `SHA256SUMS`; start the package from a
   workspace path containing spaces.
 - [ ] Confirm the startup warning names command execution, host reads, local
-  service effects, workspace writes, and durable project/global installation.
+  service effects, every declared writable root, unrestricted workload
+  networking/listeners, durable project/global installation, and durable
+  Cargo/Gradle state.
 
 ## Loopback and tunnel
 
@@ -23,7 +25,7 @@ authority, and redacted result IDs with the release record.
   origin via `--origin`; start ngrok externally.
 - [ ] Prove an unrelated `Host`, forwarded host, and unrelated `Origin` are
   rejected, while the configured HTTPS `/mcp` endpoint connects.
-- [ ] In ChatGPT developer mode, rescan and confirm exactly the six frozen
+- [ ] In ChatGPT developer mode, rescan and confirm exactly the five frozen
   schemas. Record client-side denials separately from server failures.
 
 ## Prompts and expected observations
@@ -33,11 +35,17 @@ authority, and redacted result IDs with the release record.
   the returned `session_id`; verify only incremental output is returned.
 - [ ] Patch/write: ask for a synthetic workspace file edit; verify the file and
   confirm the outside writable sentinel is unchanged.
-- [ ] Skills: install one synthetic public skill into `project` and one into
-  `global`, list both, read both exact handles, and verify persistence after a
-  server restart.
-- [ ] Unsupported: request a seventh/nonexistent tool and an outside-workspace
-  direct write; verify a clear denial and unchanged sentinel.
+- [ ] Skills: discover and read exact system handle
+  `skill://host/system/skill-installer/SKILL.md`; use `exec_command` to run its
+  original Python script once with the default global destination and once with
+  `--dest <workspace>/.agents/skills`; list/read both installed exact handles
+  and verify persistence after a server restart.
+- [ ] Network: connect outbound and to a local service, then bind workload
+  listeners on loopback and wildcard/non-loopback interfaces. Confirm the MCP
+  endpoint itself remains loopback-bound.
+- [ ] Unsupported: request `skills.install` or another nonexistent tool and a
+  direct write outside every declared writable root; verify a clear denial and
+  unchanged sentinel.
 
 ## Cleanup
 

@@ -1,18 +1,22 @@
-# Deferred U2 native sandbox work
+# Superseded native sandbox findings
 
-Recorded on 2026-08-11 for branch `feat/mcp-agent-foundation`.
+Recorded on 2026-08-11 for branch `feat/mcp-agent-foundation`; superseded on
+2026-08-23 by the macOS-only capability contract in
+`docs/plans/2026-08-23-1219-refactor-codex-parity-skills-sandbox-plan.md`.
 
 ## Status
 
-U2 is verified locally on macOS, including real Seatbelt enforcement, mandatory
-preflight, outside-write denial, protected-root denial, child inheritance,
-loopback access, and managed-root race coverage.
+The earlier protected-metadata and cross-platform Definition of Done is no
+longer active. The shipped support contract is macOS only. Workspace metadata
+is writable, managed temp/cache/tool-state roots are also writable, workload
+networking and listener binds are unrestricted, and direct writes outside the
+declared roots remain denied.
 
-U2 is not formally complete under the plan's cross-platform Definition of Done.
-Development of dependent units may continue on macOS, but the project must not
-claim Linux or Windows sandbox support until the items below are resolved.
+## Historical deferred work
 
-## Deferred work
+The sections below are retained as historical context only. They are not
+release blockers for the macOS package and must not be read as implemented or
+supported behavior.
 
 ### Linux protected-create lifecycle
 
@@ -45,8 +49,8 @@ Exit criteria:
 - Prove clean-install preflight, process-tree enforcement, helper absence, and
   helper replacement behavior on a native Windows runner.
 
-## Required final gate
+## Historical final gate
 
-Before U2 is marked complete, run the shared clean-install conformance suite on
-native macOS, Linux, and Windows with no skipped sandbox case and unchanged
-outside sentinels.
+The former three-platform gate is superseded. Any future Linux or Windows work
+requires a new product contract, implementation, packaging, native conformance,
+and CI proof before support can be claimed.

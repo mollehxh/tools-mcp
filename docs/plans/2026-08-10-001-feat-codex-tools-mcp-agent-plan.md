@@ -2,6 +2,8 @@
 title: Codex Tools MCP Agent - Plan
 type: feat
 date: 2026-08-10
+status: superseded
+superseded_by: docs/plans/2026-08-23-1219-refactor-codex-parity-skills-sandbox-plan.md
 topic: codex-tools-mcp-agent
 artifact_contract: ce-unified-plan/v1
 artifact_readiness: implementation-ready
@@ -11,6 +13,14 @@ deepened: 2026-08-10
 ---
 
 # Codex Tools MCP Agent - Plan
+
+> **Historical plan — superseded on 2026-08-23.** This document records the
+> original six-tool, brokered-installer, protected-metadata, and cross-platform
+> design. It is not the active product contract. The implementation and release
+> gates are governed by
+> `docs/plans/2026-08-23-1219-refactor-codex-parity-skills-sandbox-plan.md`.
+> Obsolete requirements below are intentionally preserved as decision history,
+> not as current promises.
 
 ## Goal Capsule
 

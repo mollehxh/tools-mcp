@@ -10,17 +10,16 @@ existing application capabilities. HTTP admission, audit classification,
 workspace selection, skill roots, and process ownership may become
 deployment-specific.
 
-The model-visible contract remains exactly these six tools:
+The model-visible contract remains exactly these five tools:
 
 - `exec_command`
 - `write_stdin`
 - `apply_patch`
-- `skills.install`
 - `skills.list`
 - `skills.read`
 
 Authentication tokens, login prompts, tenant IDs, and deployment state must
-not become tool arguments or a seventh tool. The future design must preserve
+not become tool arguments or another tool. The future design must preserve
 the existing schemas, result/error classifications, structured-content
 fallback, and owner-scoped session semantics. Authorization headers and
 credentials remain excluded from logs.
