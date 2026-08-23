@@ -44,8 +44,8 @@ fn exposure_warning_names_every_persistent_local_risk() {
     for risk in [
         "command execution",
         "host reads",
-        "workspace writes",
-        "local-service effects",
+        "writes across declared workspace/temp/cache/tool roots",
+        "unrestricted workload networking and listener binds",
         "project/global skill installation",
         "development-only",
     ] {
