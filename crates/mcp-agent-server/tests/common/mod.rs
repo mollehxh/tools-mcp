@@ -4,33 +4,9 @@ use codex_tools_runtime::process::{OwnerId, ProcessManager};
 use mcp_agent_authority::WorkspaceAuthority;
 use mcp_agent_authority::sandbox::{Sandbox, expected_manifest};
 use mcp_agent_server::{AgentHandler, ApplicationContext};
-use skill_store::{
-    FetchedRepository, GitFetcher, InstallLimits, NormalizedGitSource, RepositoryEntry,
-    RepositoryEntryKind, SkillCatalog, SkillInstallError, SkillInstaller,
-};
+use skill_store::SkillCatalog;
 use std::fs;
 use std::sync::Arc;
-
-#[derive(Debug)]
-struct FixtureFetcher;
-
-impl GitFetcher for FixtureFetcher {
-    fn fetch(
-        &self,
-        source: &NormalizedGitSource,
-        _limits: &InstallLimits,
-    ) -> Result<FetchedRepository, SkillInstallError> {
-        Ok(FetchedRepository {
-            repository: source.repository.clone(),
-            commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
-            entries: vec![RepositoryEntry {
-                path: "SKILL.md".to_string(),
-                kind: RepositoryEntryKind::RegularFile,
-                bytes: b"---\nname: installed\ndescription: installed fixture\n---\nbody".to_vec(),
-            }],
-        })
-    }
-}
 
 pub struct Fixture {
     pub _root: tempfile::TempDir,
@@ -41,10 +17,6 @@ pub struct Fixture {
 
 impl Fixture {
     pub fn new() -> Self {
-        Self::with_fetcher(Arc::new(FixtureFetcher))
-    }
-
-    pub fn with_fetcher(fetcher: Arc<dyn GitFetcher>) -> Self {
         let root = tempfile::tempdir().unwrap();
         let workspace = root.path().join("workspace");
         let global = root.path().join("global-skills");
@@ -66,14 +38,10 @@ impl Fixture {
             .0;
         let processes = Arc::new(ProcessManager::new(Arc::new(sandbox)));
         let catalog = Arc::new(SkillCatalog::new(&authority).unwrap());
-        let installer = Arc::new(
-            SkillInstaller::with_fetcher(&authority, Arc::clone(&catalog), fetcher).unwrap(),
-        );
         let context = Arc::new(ApplicationContext::new(
             authority,
             Arc::clone(&processes),
             catalog,
-            installer,
             OwnerId::from("local-anonymous"),
         ));
         Self {

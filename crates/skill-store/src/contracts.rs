@@ -58,66 +58,6 @@ impl SkillSource {
             selector: None,
         }
     }
-
-    pub(crate) fn git(repository: String, commit: String, selector: Option<String>) -> Self {
-        Self {
-            kind: SkillSourceKind::Git,
-            repository: Some(repository),
-            commit: Some(commit),
-            selector,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SkillInstallInput {
-    pub repository: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub selector: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub revision: Option<String>,
-    pub scope: SkillScope,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SkillInstallOutput {
-    pub authority: SkillAuthority,
-    pub scope: SkillScope,
-    pub package: String,
-    pub name: String,
-    pub main_resource: String,
-    pub source: SkillSource,
-}
-
-impl SkillInstallOutput {
-    pub(crate) fn new(
-        scope: SkillScope,
-        package: String,
-        name: String,
-        source: SkillSource,
-    ) -> Self {
-        let main_resource = format!("skill://host/{}/{package}/SKILL.md", scope.as_str());
-        Self {
-            authority: SkillAuthority::Host,
-            scope,
-            package,
-            name,
-            main_resource,
-            source,
-        }
-    }
-
-    #[must_use]
-    pub fn read_input(&self) -> SkillReadInput {
-        SkillReadInput {
-            scope: self.scope,
-            package: self.package.clone(),
-            resource: self.main_resource.clone(),
-            cursor: None,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

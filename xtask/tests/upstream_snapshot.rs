@@ -250,7 +250,7 @@ fn rejects_missing_or_multiple_rmcp_versions() {
 fn rejects_unregistered_contract_difference() {
     let baseline = serde_json::json!([{"name": "exec_command", "description": "upstream"}]);
     let local = serde_json::json!([{"name": "exec_command", "description": "changed"}]);
-    let deltas = serde_json::json!({"version": 1, "baseline": "fixture.json", "deltas": []});
+    let deltas = serde_json::json!({"version": 2, "baseline": "fixture.json", "deltas": []});
     let error = verify_contract_delta_coverage(&baseline, &local, &deltas).unwrap_err();
     assert!(
         error

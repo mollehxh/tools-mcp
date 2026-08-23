@@ -13,7 +13,6 @@ explicit legacy exemption whose exact symbol and rationale are pinned in the off
 - skill authority is expressed as local `project`/`global` scope (R15-R17).
 - skill catalog list/read, cursor paging, project precedence, and package-relative resources adapt
   the pinned extension tools to no-follow project/global host capabilities (R7-R9, R15-R17).
-- `skills.install` is a new contract based on installer semantics (R14, R18-R20).
 - MCP structured results and truthful annotations are transport adaptations (R2-R3, R11).
 - unified exec is extracted behind an owner-scoped, transport-neutral registry; live slots are
   never evicted, transport handoff controls publication/consumption, and one five-minute terminal

@@ -16,11 +16,10 @@ use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
 const INSPECTOR_PACKAGE: &str = "@modelcontextprotocol/inspector@2.1.0";
-const EXPECTED_TOOLS: [&str; 6] = [
+const EXPECTED_TOOLS: [&str; 5] = [
     "exec_command",
     "write_stdin",
     "apply_patch",
-    "skills.install",
     "skills.list",
     "skills.read",
 ];
@@ -42,6 +41,7 @@ struct InspectorTool {
 
 #[derive(Deserialize)]
 struct ChatGptCheckpoint {
+    version: u32,
     status: String,
     expected_tools: Vec<String>,
     observed_at: String,
@@ -59,8 +59,8 @@ pub fn run() -> anyhow::Result<()> {
         let chatgpt = verify_chatgpt_checkpoint()?;
         println!("ChatGPT/ngrok checkpoint: PASS ({chatgpt} tools)");
         anyhow::ensure!(
-            stateless == 6 && legacy == 6 && inspector == 6,
-            "stub surface must contain six tools"
+            stateless == 5 && legacy == 5 && inspector == 5,
+            "stub surface must contain five tools"
         );
         Ok(())
     })
@@ -74,6 +74,10 @@ pub fn verify_chatgpt_checkpoint() -> anyhow::Result<usize> {
     let checkpoint: ChatGptCheckpoint =
         toml::from_str(&contents).with_context(|| format!("failed to parse {}", path.display()))?;
 
+    anyhow::ensure!(
+        checkpoint.version == 2,
+        "ChatGPT/ngrok checkpoint uses an unsupported protocol version"
+    );
     anyhow::ensure!(
         checkpoint.status == "passed",
         "ChatGPT/ngrok checkpoint has not passed"

@@ -4,7 +4,7 @@ use mcp_agent_server::AgentHandler;
 mod tool_surface;
 
 #[test]
-fn advertises_exactly_the_six_frozen_tools_in_order() {
+fn advertises_exactly_the_five_frozen_tools_in_order() {
     let tools = AgentHandler::tools();
     tool_surface::assert_exact_tool_surface(&tools);
     assert!(tools.iter().all(|tool| {
@@ -15,7 +15,7 @@ fn advertises_exactly_the_six_frozen_tools_in_order() {
 }
 
 #[test]
-fn annotations_match_the_frozen_contract() {
+fn annotations_match_the_five_tool_contract() {
     let tools = AgentHandler::tools();
     let readonly = tools
         .iter()

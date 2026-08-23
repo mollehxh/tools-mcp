@@ -214,17 +214,6 @@ fn command_or_patch_style_edits_are_reconciled_before_each_list() {
 }
 
 #[test]
-fn installer_generation_invalidation_forces_reconciliation() {
-    let fixture = Fixture::new();
-    let catalog = SkillCatalog::new(&fixture.authority).unwrap();
-    let before = catalog.generation();
-    catalog.invalidate_after_install();
-    assert_eq!(catalog.generation(), before + 1);
-    assert!(list(&catalog, SkillScope::Project).skills.is_empty());
-    assert_eq!(catalog.generation(), before + 1);
-}
-
-#[test]
 fn oversized_description_is_truncated_without_exceeding_the_response_limit() {
     let fixture = Fixture::new();
     fixture.write_skill(

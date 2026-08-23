@@ -7,11 +7,12 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 #[test]
-fn recorded_chatgpt_checkpoint_matches_the_frozen_surface() {
-    assert_eq!(
-        xtask::transport_spike::verify_chatgpt_checkpoint()
-            .expect("verify recorded ChatGPT checkpoint"),
-        6
+fn protocol_v2_requires_a_fresh_chatgpt_checkpoint() {
+    let error = xtask::transport_spike::verify_chatgpt_checkpoint().unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("ChatGPT/ngrok checkpoint has not passed")
     );
 }
 
@@ -25,7 +26,7 @@ async fn both_loopback_lifecycle_modes_discover_the_frozen_surface() {
     .expect("loopback transport spike timed out")
     .expect("loopback transport spike failed");
 
-    assert_eq!((stateless, legacy), (6, 6));
+    assert_eq!((stateless, legacy), (5, 5));
 }
 
 #[tokio::test]
@@ -68,7 +69,6 @@ async fn persistent_stub_serves_the_frozen_surface_until_cancelled() {
             "exec_command",
             "write_stdin",
             "apply_patch",
-            "skills.install",
             "skills.list",
             "skills.read",
         ]

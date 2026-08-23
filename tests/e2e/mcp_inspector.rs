@@ -8,7 +8,6 @@ fn inspector_is_pinned_and_requires_the_complete_tool_surface() {
         "exec_command",
         "write_stdin",
         "apply_patch",
-        "skills.install",
         "skills.list",
         "skills.read",
     ])

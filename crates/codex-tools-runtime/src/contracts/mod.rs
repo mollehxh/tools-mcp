@@ -29,7 +29,7 @@ pub struct ToolAnnotations {
 }
 
 #[must_use]
-/// Returns the pinned, checked-in six-tool contract fixture.
+/// Returns the pinned, checked-in five-tool contract fixture.
 ///
 /// # Panics
 ///

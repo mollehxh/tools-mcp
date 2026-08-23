@@ -10,14 +10,10 @@ use rmcp::model::{
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::{Map, Value, json};
-use skill_store::{
-    SkillInstallError, SkillInstallInput, SkillInstallOutput, SkillListInput, SkillReadInput,
-    SkillScope, SkillStoreError,
-};
+use serde::de::DeserializeOwned;
+use serde_json::{Map, Value};
+use skill_store::{SkillListInput, SkillReadInput, SkillStoreError};
 use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 pub struct AgentHandler {
@@ -40,21 +36,10 @@ impl AgentHandler {
         name: &str,
         arguments: Option<Map<String, Value>>,
     ) -> CallToolResponse {
-        self.call_with_cancellation(name, arguments, CancellationToken::new())
-            .await
-    }
-
-    async fn call_with_cancellation(
-        &self,
-        name: &str,
-        arguments: Option<Map<String, Value>>,
-        cancellation: CancellationToken,
-    ) -> CallToolResponse {
         let result = match name {
             "exec_command" => self.exec_command(arguments).await,
             "write_stdin" => self.write_stdin(arguments).await,
             "apply_patch" => self.apply_patch(arguments).await,
-            "skills.install" => self.install_skill(arguments, cancellation).await,
             "skills.list" => self.list_skills(arguments).await,
             "skills.read" => self.read_skill(arguments).await,
             _ => error_result("unknown_tool", "the requested tool is not available", None),
@@ -122,50 +107,6 @@ impl AgentHandler {
         }
     }
 
-    async fn install_skill(
-        &self,
-        arguments: Option<Map<String, Value>>,
-        cancellation: CancellationToken,
-    ) -> rmcp::model::CallToolResult {
-        let input: InstallToolInput = match decode(arguments) {
-            Ok(input) => input,
-            Err(error) => return invalid_arguments(error),
-        };
-        let input = SkillInstallInput {
-            repository: input.source,
-            selector: input.selector,
-            revision: None,
-            scope: input.scope,
-        };
-        let installer = Arc::clone(&self.context.installer);
-        let Some((request, worker)) = self.context.begin_install_operation(cancellation) else {
-            return error_result("shutting_down", "skill installation is shutting down", None);
-        };
-        let result = tokio::task::spawn_blocking(move || {
-            installer.install_cancellable(&input, || worker.is_cancelled())
-        })
-        .await;
-        drop(request);
-        match result {
-            Ok(Ok(output)) => InstallToolOutput::from_store(&output).map_or_else(
-                || {
-                    error_result(
-                        "install_failed",
-                        "the immutable source receipt omitted its commit",
-                        None,
-                    )
-                },
-                |output| success_result(&output).unwrap_or_else(|_| internal_serialization_error()),
-            ),
-            Ok(Err(error)) => install_error(&error),
-            Err(_) => error_result(
-                "install_failed",
-                "the install worker stopped unexpectedly",
-                None,
-            ),
-        }
-    }
-
     async fn list_skills(
         &self,
         arguments: Option<Map<String, Value>>,
@@ -211,42 +152,17 @@ impl AgentHandler {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct InstallToolInput {
-    source: String,
-    selector: Option<String>,
-    scope: SkillScope,
-}
-
-#[derive(Serialize)]
-struct InstallToolOutput {
-    commit: String,
-    package: String,
-    main_resource: String,
-}
-
-impl InstallToolOutput {
-    fn from_store(output: &SkillInstallOutput) -> Option<Self> {
-        Some(Self {
-            commit: output.source.commit.clone()?,
-            package: output.package.clone(),
-            main_resource: output.main_resource.clone(),
-        })
-    }
-}
-
 impl ServerHandler for AgentHandler {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "Six local coding and skill tools with fixed workspace-write authority",
+            "Five local coding and skill tools with fixed workspace-write authority",
         )
     }
 
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        context: RequestContext<RoleServer>,
+        _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         if self.get_tool(&request.name).is_none() {
             return Err(ErrorData::new(
@@ -255,9 +171,7 @@ impl ServerHandler for AgentHandler {
                 None,
             ));
         }
-        Ok(self
-            .call_with_cancellation(&request.name, request.arguments, context.ct)
-            .await)
+        Ok(self.call(&request.name, request.arguments).await)
     }
 
     async fn list_tools(
@@ -316,18 +230,4 @@ fn store_error(error: &SkillStoreError) -> rmcp::model::CallToolResult {
         _ => "skill_store_failed",
     };
     error_result(code, &error.to_string(), None)
-}
-
-fn install_error(error: &SkillInstallError) -> rmcp::model::CallToolResult {
-    let details = (!error.candidate_selectors().is_empty())
-        .then(|| json!({ "candidate_selectors": error.candidate_selectors() }));
-    let code = match error {
-        SkillInstallError::MultipleSkills { .. } => "multiple_skills",
-        SkillInstallError::Collision => "skill_collision",
-        SkillInstallError::LimitExceeded => "install_limit_exceeded",
-        SkillInstallError::Cancelled => "shutting_down",
-        SkillInstallError::InvalidSource | SkillInstallError::NonPublicSource => "unsafe_source",
-        _ => "install_failed",
-    };
-    error_result(code, &error.to_string(), details)
 }

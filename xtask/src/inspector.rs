@@ -9,11 +9,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const INSPECTOR_PACKAGE: &str = "@modelcontextprotocol/inspector@2.1.0";
-const EXPECTED_TOOLS: [&str; 6] = [
+const EXPECTED_TOOLS: [&str; 5] = [
     "exec_command",
     "write_stdin",
     "apply_patch",
-    "skills.install",
     "skills.list",
     "skills.read",
 ];
@@ -151,20 +150,12 @@ pub fn run() -> anyhow::Result<()> {
     ] {
         inspector_allow_schema_error(&endpoint, tool, &arguments)?;
     }
-    inspector_allow_schema_error(
-        &endpoint,
-        "skills.install",
-        &serde_json::json!({
-            "source": "http://invalid.example/skill.git",
-            "scope": "project"
-        }),
-    )?;
     ensure!(
         fs::read_to_string(workspace.join("inspector-created.txt"))? == "inspector\n",
         "Inspector apply_patch did not modify the disposable workspace"
     );
     server.stop()?;
-    println!("MCP Inspector {INSPECTOR_PACKAGE}: listed and called all six packaged macOS tools");
+    println!("MCP Inspector {INSPECTOR_PACKAGE}: listed and called all five packaged macOS tools");
     Ok(())
 }
 

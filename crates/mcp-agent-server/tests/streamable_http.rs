@@ -1,14 +1,9 @@
 mod common;
 
-use common::{Fixture, arguments, complete, yielded_command};
+use common::{Fixture, yielded_command};
 use mcp_agent_server::http::router;
 use mcp_agent_server::http::{HttpConfig, HttpConfigError};
 use serde_json::json;
-use skill_store::{
-    FetchedRepository, GitFetcher, InstallLimits, NormalizedGitSource, RepositoryEntry,
-    SkillInstallError,
-};
-use std::sync::{Arc, Condvar, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
@@ -93,9 +88,40 @@ async fn raw_http_is_stateless_json_and_enforces_admission() {
     assert!(is_json);
     let body: serde_json::Value = serde_json::from_str(&response_body).unwrap();
     let tools = body["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 6);
+    assert_eq!(tools.len(), 5);
     assert_eq!(tools[0]["name"], "exec_command");
-    assert_eq!(tools[5]["name"], "skills.read");
+    assert_eq!(tools[4]["name"], "skills.read");
+
+    let removed_install = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "skills.install",
+            "arguments": {
+                "source": "https://example.com/skills.git",
+                "scope": "project"
+            },
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientInfo": {"name": "u3-test", "version": "1"},
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }
+        }
+    });
+    let response = client
+        .post(&url)
+        .header("Accept", "application/json, text/event-stream")
+        .header("MCP-Protocol-Version", "2026-07-28")
+        .header("Mcp-Method", "tools/call")
+        .header("Mcp-Name", "skills.install")
+        .json(&removed_install)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["code"], -32601);
 
     for (header, value) in [
         ("X-Forwarded-Host", "forged.example"),
@@ -397,115 +423,6 @@ async fn upload_and_response_timeouts_are_enforced_and_recover() {
         .unwrap();
     assert_eq!(recovery.status(), reqwest::StatusCode::OK);
 
-    token.cancel();
-    server.await.unwrap();
-    fixture.processes.shutdown().await;
-}
-
-#[derive(Debug)]
-struct BlockingFetcher {
-    state: Arc<(Mutex<(bool, bool)>, Condvar)>,
-}
-
-impl GitFetcher for BlockingFetcher {
-    fn fetch(
-        &self,
-        source: &NormalizedGitSource,
-        _limits: &InstallLimits,
-    ) -> Result<FetchedRepository, SkillInstallError> {
-        let (lock, wake) = &*self.state;
-        let mut state = lock.lock().unwrap();
-        state.0 = true;
-        wake.notify_all();
-        while !state.1 {
-            state = wake.wait(state).unwrap();
-        }
-        Ok(FetchedRepository {
-            repository: source.repository.clone(),
-            commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
-            entries: vec![RepositoryEntry::regular(
-                "SKILL.md",
-                b"---\nname: late\ndescription: late install\n---\n".to_vec(),
-            )],
-        })
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn timed_out_install_worker_cannot_publish_later() {
-    let state = Arc::new((Mutex::new((false, false)), Condvar::new()));
-    let fixture = Fixture::with_fetcher(Arc::new(BlockingFetcher {
-        state: Arc::clone(&state),
-    }));
-    let token = CancellationToken::new();
-    let config = HttpConfig {
-        response_idle_timeout: std::time::Duration::from_millis(50),
-        ..HttpConfig::default()
-    };
-    let app = router(fixture.context.clone(), config, token.child_token()).unwrap();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn({
-        let token = token.clone();
-        async move {
-            axum::serve(listener, app)
-                .with_graceful_shutdown(token.cancelled_owned())
-                .await
-                .unwrap();
-        }
-    });
-    let call = json!({
-        "jsonrpc": "2.0",
-        "id": 20,
-        "method": "tools/call",
-        "params": {
-            "name": "skills.install",
-            "arguments": {
-                "source": "https://example.com/skills.git",
-                "scope": "project"
-            },
-            "_meta": {
-                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-                "io.modelcontextprotocol/clientInfo": {"name": "u7-test", "version": "1"},
-                "io.modelcontextprotocol/clientCapabilities": {}
-            }
-        }
-    });
-    let client = reqwest::Client::new();
-    let response = client
-        .post(format!("http://{address}/mcp"))
-        .header("Accept", "application/json, text/event-stream")
-        .header("MCP-Protocol-Version", "2026-07-28")
-        .header("Mcp-Method", "tools/call")
-        .header("Mcp-Name", "skills.install")
-        .json(&call)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), reqwest::StatusCode::GATEWAY_TIMEOUT);
-
-    {
-        let (lock, wake) = &*state;
-        let mut state = lock.lock().unwrap();
-        assert!(state.0, "install fetch never started");
-        state.1 = true;
-        wake.notify_all();
-    }
-    fixture.context.wait_for_install_operations().await;
-
-    let listed = complete(
-        fixture
-            .handler()
-            .call("skills.list", Some(arguments(json!({"scope": "project"}))))
-            .await,
-    );
-    assert!(
-        listed.structured_content.unwrap()["skills"]
-            .as_array()
-            .unwrap()
-            .is_empty(),
-        "timed-out install published after the response"
-    );
     token.cancel();
     server.await.unwrap();
     fixture.processes.shutdown().await;

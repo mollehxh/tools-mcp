@@ -471,7 +471,7 @@ pub fn verify_contract_delta_coverage(
 ) -> anyhow::Result<()> {
     let registry: DeltaRegistry =
         serde_json::from_value(registry.clone()).context("decode compatibility delta registry")?;
-    ensure!(registry.version == 1, "unsupported delta registry version");
+    ensure!(registry.version == 2, "unsupported delta registry version");
     ensure!(
         !registry.baseline.trim().is_empty(),
         "delta registry lacks baseline path"

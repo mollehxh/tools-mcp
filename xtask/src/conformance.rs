@@ -15,7 +15,7 @@ const SUITES: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        "six-tool transport",
+        "five-tool transport",
         &[
             "test",
             "-p",
@@ -50,7 +50,7 @@ const SUITES: &[(&str, &[&str])] = &[
     ),
 ];
 
-/// Runs the shared macOS conformance gates for the six-tool server and package.
+/// Runs the shared macOS conformance gates for the five-tool server and package.
 pub fn run() -> anyhow::Result<()> {
     anyhow::ensure!(
         std::env::consts::OS == "macos",
@@ -78,7 +78,7 @@ mod tests {
             names,
             [
                 "workspace-write",
-                "six-tool transport",
+                "five-tool transport",
                 "CLI exposure",
                 "macOS package contract"
             ]

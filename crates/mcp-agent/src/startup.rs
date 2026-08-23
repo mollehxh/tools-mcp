@@ -7,7 +7,7 @@ use mcp_agent_authority::sandbox::{PreflightReceipt, Sandbox};
 use mcp_agent_authority::{CapabilitySnapshot, WorkspaceAuthority};
 use mcp_agent_server::ApplicationContext;
 use mcp_agent_server::http::{HttpConfig, MCP_ENDPOINT, router};
-use skill_store::{SkillCatalog, SkillInstaller};
+use skill_store::SkillCatalog;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -52,15 +52,10 @@ pub async fn run(cli: Cli) -> Result<()> {
 
     let processes = Arc::new(ProcessManager::new(Arc::new(sandbox)));
     let catalog = Arc::new(SkillCatalog::new(&authority).context("skill catalog setup failed")?);
-    let installer = Arc::new(
-        SkillInstaller::new(&authority, Arc::clone(&catalog))
-            .context("skill installer setup failed")?,
-    );
     let context = Arc::new(ApplicationContext::new(
         authority.clone(),
         Arc::clone(&processes),
         catalog,
-        installer,
         OwnerId::from("local-anonymous"),
     ));
 
@@ -85,7 +80,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     tokio::spawn(async move {
         let _ = crate::shutdown::cancel_on_signal(signal_token).await;
     });
-    serve_prepared(listener, app, cancellation, context, processes).await
+    serve_prepared(listener, app, cancellation, processes).await
 }
 
 /// Serves an already-prepared application and coordinates graceful shutdown.
@@ -100,20 +95,15 @@ pub async fn serve_prepared(
     listener: tokio::net::TcpListener,
     app: Router,
     cancellation: CancellationToken,
-    context: Arc<ApplicationContext>,
     processes: Arc<ProcessManager>,
 ) -> Result<()> {
     let shutdown_token = cancellation.clone();
-    let shutdown_context = Arc::clone(&context);
     let serve_result = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown_token.cancelled().await;
-            shutdown_context.cancel_install_operations();
         })
         .await;
     cancellation.cancel();
-    context.cancel_install_operations();
-    context.wait_for_install_operations().await;
     processes.shutdown().await;
     serve_result.context("HTTP server failed")
 }
@@ -161,8 +151,6 @@ mod tests {
     use codex_tools_runtime::process::{OwnerId, ProcessError, ProcessManager};
     use mcp_agent_authority::WorkspaceAuthority;
     use mcp_agent_authority::sandbox::{Sandbox, expected_manifest};
-    use mcp_agent_server::ApplicationContext;
-    use skill_store::{SkillCatalog, SkillInstaller};
     use std::fs;
     use std::sync::Arc;
     use std::time::Duration;
@@ -171,8 +159,8 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn prepared_server_closes_admission_before_draining_and_cleans_processes() {
-        let (fixture, context, processes) = fixture();
+    async fn prepared_server_drains_requests_and_cleans_live_processes() {
+        let (fixture, processes) = fixture();
         let pending = processes
             .exec_command(&OwnerId::from("lifecycle-test"), command("sleep 30"))
             .await
@@ -204,7 +192,6 @@ mod tests {
             listener,
             app,
             cancellation.clone(),
-            Arc::clone(&context),
             Arc::clone(&processes),
         ));
         let request = tokio::spawn(async move {
@@ -222,16 +209,14 @@ mod tests {
         cancellation.cancel();
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if context.install_operations_closed()
-                    && tokio::net::TcpStream::connect(address).await.is_err()
-                {
+                if tokio::net::TcpStream::connect(address).await.is_err() {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
-        .expect("shutdown must close HTTP and install admission");
+        .expect("shutdown must close HTTP admission");
         assert!(!server.is_finished(), "in-flight request was not drained");
 
         release.notify_waiters();
@@ -247,11 +232,7 @@ mod tests {
         drop(fixture);
     }
 
-    fn fixture() -> (
-        tempfile::TempDir,
-        Arc<ApplicationContext>,
-        Arc<ProcessManager>,
-    ) {
+    fn fixture() -> (tempfile::TempDir, Arc<ProcessManager>) {
         let root = tempfile::tempdir().unwrap();
         let workspace = root.path().join("workspace");
         let global = root.path().join("global");
@@ -272,16 +253,7 @@ mod tests {
             .unwrap()
             .0;
         let processes = Arc::new(ProcessManager::new(Arc::new(sandbox)));
-        let catalog = Arc::new(SkillCatalog::new(&authority).unwrap());
-        let installer = Arc::new(SkillInstaller::new(&authority, Arc::clone(&catalog)).unwrap());
-        let context = Arc::new(ApplicationContext::new(
-            authority,
-            Arc::clone(&processes),
-            catalog,
-            installer,
-            OwnerId::from("lifecycle-test"),
-        ));
-        (root, context, processes)
+        (root, processes)
     }
 
     fn command(cmd: &str) -> ExecCommandInput {

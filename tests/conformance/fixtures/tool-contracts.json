@@ -78,22 +78,6 @@
     "annotations": { "read_only_hint": false, "destructive_hint": true, "open_world_hint": false }
   },
   {
-    "name": "skills.install",
-    "description": "Installs exactly one validated skill from an immutable public HTTPS Git tree.",
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "source": { "type": "string", "description": "Public HTTPS Git repository or GitHub tree URL." },
-        "selector": { "type": "string", "description": "Optional repository-relative skill subtree." },
-        "scope": { "type": "string", "enum": ["project", "global"] }
-      },
-      "required": ["source", "scope"],
-      "additionalProperties": false
-    },
-    "output_schema": { "type": "object", "properties": { "commit": { "type": "string" }, "package": { "type": "string" }, "main_resource": { "type": "string" } }, "required": ["commit", "package", "main_resource"], "additionalProperties": false },
-    "annotations": { "read_only_hint": false, "destructive_hint": true, "open_world_hint": true }
-  },
-  {
     "name": "skills.list",
     "description": "List skills owned by the requested host scope. Returns the exact authority, package, and main_resource values required by skills.read. Pass next_cursor back as cursor to continue.",
     "input_schema": {
@@ -161,4 +145,3 @@
     "annotations": { "read_only_hint": true, "destructive_hint": false, "open_world_hint": false }
   }
 ]
-

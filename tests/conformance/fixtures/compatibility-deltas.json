@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "baseline": "tests/conformance/fixtures/pinned-upstream-tool-contracts.json",
   "deltas": [
     { "tool": "exec_command", "json_path": "/input_schema/properties/additional_permissions", "kind": "omitted", "expected_upstream_sha256": "c1e2f99e397049622d55179299110186553d21c5c9fedaeb889b51359a6ad49b", "upstream_source": "codex-rs/core/src/tools/handlers/shell_spec.rs#create_approval_parameters.additional_permissions", "reason": "Server-side approval is disabled, so permission escalation is never advertised.", "requirements": ["R3", "R11"] },
@@ -16,7 +16,6 @@
     { "tool": "apply_patch", "json_path": "/input_schema/type", "kind": "changed", "expected_upstream_sha256": "e9e5c1c9e4f6277339d1bcde0733a59bd42f8731f449da6dc13010a916930d48", "expected_local_sha256": "626992da9517ee49930ee1340383a0cc334563d9aa429619a17842d0eeecb524", "upstream_source": "codex-rs/core/src/tools/handlers/apply_patch_spec.rs#FreeformTool", "reason": "MCP transports the freeform grammar through an object field.", "requirements": ["R6"] },
     { "tool": "apply_patch", "json_path": "/output_schema", "kind": "added", "expected_local_sha256": "549212a711dfdc4ae86544e27c8988102b54cdcef8e5fe0973c086bbf8bd480a", "upstream_source": "codex-rs/core/src/tools/handlers/apply_patch_spec.rs#create_apply_patch_freeform_tool", "reason": "MCP declares the structured result envelope.", "requirements": ["R2", "R3", "R6"] },
     { "tool": "apply_patch", "json_path": "/annotations", "kind": "added", "expected_local_sha256": "513b16a5d6f2aa44841d73a3febe3319128f90ac6c34780afe95a478a2f9deb8", "upstream_source": "codex-rs/core/src/tools/handlers/apply_patch_spec.rs#create_apply_patch_freeform_tool", "reason": "MCP transport adds frozen truthful tool annotations.", "requirements": ["R2", "R3", "R6", "R11"] },
-    { "tool": "skills.install", "json_path": "", "kind": "added", "expected_local_sha256": "f8c553a48fd8a823042924e9d306c3e7026dfc338b9c9b5b20b6cfd115c5bf1a", "upstream_source": "https://github.com/openai/skills/tree/main/skills/.system/skill-installer", "reason": "The server adds one validated immutable-tree installation tool.", "requirements": ["R14", "R18", "R19", "R20"] },
     { "tool": "skills.list", "json_path": "", "kind": "added", "expected_local_sha256": "c0487f727e6bb948515db3a93d3660008135efc91bf6c7df7512e24751235e9c", "upstream_source": "codex-rs/ext/skills/src/tools/list.rs", "reason": "The server exposes the pinned skill listing behavior through local host scope and handles.", "requirements": ["R15", "R16", "R17"] },
     { "tool": "skills.read", "json_path": "", "kind": "added", "expected_local_sha256": "5d6316cf2640864eb0da407f235929d69dabd458ff6a051d8d4de4486d8b9c5c", "upstream_source": "codex-rs/ext/skills/src/tools/read.rs", "reason": "The server exposes the pinned exact-resource behavior through local host scope and handles.", "requirements": ["R15", "R16", "R17"] }
   ]

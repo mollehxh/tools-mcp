@@ -9,7 +9,7 @@ mod exec_command_conformance;
 mod write_stdin_conformance;
 
 #[test]
-fn exactly_six_frozen_contracts_are_exposed() {
+fn exactly_five_frozen_contracts_are_exposed() {
     let contracts = frozen_tool_contracts();
     let names = contracts
         .iter()
@@ -21,7 +21,6 @@ fn exactly_six_frozen_contracts_are_exposed() {
             "exec_command",
             "write_stdin",
             "apply_patch",
-            "skills.install",
             "skills.list",
             "skills.read",
         ]
@@ -79,7 +78,7 @@ fn descriptions_defaults_outputs_and_annotations_are_frozen() {
 }
 
 #[test]
-fn all_tool_annotations_match_the_six_tool_contract() {
+fn all_tool_annotations_match_the_five_tool_contract() {
     let actual = frozen_tool_contracts()
         .iter()
         .map(|contract| {
@@ -98,7 +97,6 @@ fn all_tool_annotations_match_the_six_tool_contract() {
             ("exec_command", false, true, true),
             ("write_stdin", false, true, true),
             ("apply_patch", false, true, false),
-            ("skills.install", false, true, true),
             ("skills.list", true, false, false),
             ("skills.read", true, false, false),
         ]
@@ -107,7 +105,7 @@ fn all_tool_annotations_match_the_six_tool_contract() {
 
 #[test]
 fn skills_list_items_freeze_host_handles_and_source_metadata() {
-    let list = &frozen_tool_contracts()[4];
+    let list = &frozen_tool_contracts()[3];
     let output = list.output_schema.as_ref().unwrap();
     let item = &output["properties"]["skills"]["items"];
 

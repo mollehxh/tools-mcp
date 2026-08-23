@@ -125,3 +125,26 @@ async fn nonzero_command_exit_is_a_successful_tool_result() {
     assert_eq!(output["output"], "failure");
     fixture.processes.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn removed_skills_install_tool_is_unknown_without_runtime_action() {
+    let fixture = Fixture::new();
+    let before = fixture.processes.stats();
+    let result = complete(
+        fixture
+            .handler()
+            .call(
+                "skills.install",
+                Some(arguments(json!({
+                    "source": "https://example.com/skills.git",
+                    "scope": "project"
+                }))),
+            )
+            .await,
+    );
+
+    assert_eq!(result.is_error, Some(true));
+    assert_eq!(result.structured_content.unwrap()["error"], "unknown_tool");
+    assert_eq!(fixture.processes.stats(), before);
+    fixture.processes.shutdown().await;
+}

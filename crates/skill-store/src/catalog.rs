@@ -49,7 +49,6 @@ pub enum SkillStoreError {
 struct CatalogState {
     project: ScopeSnapshot,
     global: ScopeSnapshot,
-    observed_invalidation: u64,
 }
 
 #[derive(Debug)]
@@ -57,7 +56,6 @@ pub struct SkillCatalog {
     roots: SkillRoots,
     state: Mutex<CatalogState>,
     generation: AtomicU64,
-    invalidation: AtomicU64,
 }
 
 impl SkillCatalog {
@@ -73,7 +71,6 @@ impl SkillCatalog {
             roots,
             state: Mutex::new(CatalogState::default()),
             generation: AtomicU64::new(0),
-            invalidation: AtomicU64::new(0),
         };
         catalog.reconcile()?;
         Ok(catalog)
@@ -190,11 +187,6 @@ impl SkillCatalog {
         Ok(precedence::resolve_name(&state.project.entries, &state.global.entries, name).cloned())
     }
 
-    pub fn invalidate_after_install(&self) {
-        self.invalidation.fetch_add(1, Ordering::AcqRel);
-        self.generation.fetch_add(1, Ordering::AcqRel);
-    }
-
     #[must_use]
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
@@ -203,18 +195,15 @@ impl SkillCatalog {
     fn reconcile(&self) -> Result<(), SkillStoreError> {
         let project = self.roots.scan(SkillScope::Project);
         let global = self.roots.scan(SkillScope::Global);
-        let invalidation = self.invalidation.load(Ordering::Acquire);
         let mut state = self
             .state
             .lock()
             .map_err(|_| SkillStoreError::StateUnavailable)?;
         let contents_changed = state.project.fingerprint != project.fingerprint
             || state.global.fingerprint != global.fingerprint;
-        let was_invalidated = state.observed_invalidation != invalidation;
         state.project = project;
         state.global = global;
-        state.observed_invalidation = invalidation;
-        if contents_changed && !was_invalidated {
+        if contents_changed {
             self.generation.fetch_add(1, Ordering::AcqRel);
         }
         Ok(())
