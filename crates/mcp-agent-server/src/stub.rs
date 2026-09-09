@@ -1,4 +1,4 @@
-use codex_tools_runtime::contracts::{ToolContract, frozen_tool_contracts};
+use mcp_agent_tool_contracts::{ToolContract, frozen_tool_contracts};
 use rmcp::ServerHandler;
 use rmcp::model::{ListToolsResult, ServerCapabilities, ServerInfo, Tool, ToolAnnotations};
 use serde_json::{Map, Value};

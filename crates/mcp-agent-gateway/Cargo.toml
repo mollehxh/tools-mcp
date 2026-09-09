@@ -1,0 +1,36 @@
+[package]
+name = "mcp-agent-gateway"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+argon2.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+axum-server.workspace = true
+base64.workspace = true
+hmac.workspace = true
+mcp-agent-tool-contracts = { path = "../mcp-agent-tool-contracts" }
+mcp-agent-relay = { path = "../mcp-agent-relay" }
+mcp-agent-server = { path = "../mcp-agent-server" }
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+rustls-pemfile.workspace = true
+rustls-pki-types.workspace = true
+rand.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+thiserror.workspace = true
+subtle.workspace = true
+tempfile.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+
+[lints]
+workspace = true

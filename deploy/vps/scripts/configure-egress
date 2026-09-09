@@ -1,0 +1,41 @@
+#!/bin/sh
+set -eu
+
+fail() { printf 'STOP: %s\n' "$*" >&2; exit 1; }
+[ "$(id -u)" -ne 0 ] || fail "egress policy must be installed by the rootless workload user"
+container=${TOOLS_MCP_CONTAINER:-tools-mcp-workspace}
+pid=$(podman inspect "$container" --format '{{.State.Pid}}')
+case "$pid" in ''|*[!0-9]*) fail "container PID is invalid" ;; esac
+[ "$pid" -gt 1 ] || fail "container is not running"
+
+inside_net() {
+  podman unshare nsenter --target "$pid" --net /usr/sbin/nft "$@"
+}
+
+inside_net delete table inet tools_mcp_egress 2>/dev/null || true
+inside_net add table inet tools_mcp_egress
+inside_net 'add chain inet tools_mcp_egress output { type filter hook output priority 0; policy accept; comment "tools-mcp-private-deny"; }'
+inside_net add rule inet tools_mcp_egress output ip daddr 10.0.2.3 udp dport 53 accept
+inside_net add rule inet tools_mcp_egress output ip daddr 10.0.2.3 tcp dport 53 accept
+# Namespace loopback belongs to the container and must remain usable for local
+# development servers. Host interfaces and the slirp host gateway are denied
+# separately below and by allow_host_loopback=false at container creation.
+for subnet in 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 224.0.0.0/4; do
+  inside_net add rule inet tools_mcp_egress output ip daddr "$subnet" reject
+done
+for subnet in fc00::/7 fe80::/10 ff00::/8; do
+  inside_net add rule inet tools_mcp_egress output ip6 daddr "$subnet" reject
+done
+ip -o -4 address show scope global | awk '{sub(/\/.*/, "", $4); print $4}' | while IFS= read -r address; do
+  case "$address" in ''|*[!0-9.]*) fail "host IPv4 address is invalid" ;; esac
+  inside_net add rule inet tools_mcp_egress output ip daddr "$address" reject
+done
+ip -o -6 address show scope global | awk '{sub(/\/.*/, "", $4); print $4}' | while IFS= read -r address; do
+  case "$address" in ''|*[!0-9a-fA-F:]*) fail "host IPv6 address is invalid" ;; esac
+  inside_net add rule inet tools_mcp_egress output ip6 daddr "$address" reject
+done
+
+inside_net list table inet tools_mcp_egress | grep -q 'tools-mcp-private-deny' || fail "egress policy did not commit"
+if [ "${TOOLS_MCP_ALLOW_OWNER_SSH:-1}" = 1 ]; then
+  "$(dirname "$0")/owner-ssh-egress"
+fi

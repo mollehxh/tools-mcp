@@ -1,0 +1,57 @@
+#!/bin/sh
+set -eu
+
+root=$(mktemp -d)
+cleanup() { rm -rf -- "$root"; }
+trap cleanup EXIT HUP INT TERM
+metrics=$root/metrics.prom
+evidence=$root/five-tools.txt
+cat > "$metrics" <<'EOF'
+tools_mcp_gateway_ready 1
+tools_mcp_backend_eligible{backend="vps"} 1
+tools_mcp_backend_compatible{backend="vps"} 1
+tools_mcp_sqlite_integrity_ok 1
+tools_mcp_shared_route_matrix_ok 1
+tools_mcp_yandex_mail_route_probe_ok 1
+tools_mcp_external_ssh_probe_ok 1
+tools_mcp_external_vpn_probe_ok 1
+tools_mcp_docker_baseline_match 1
+tools_mcp_amnezia_baseline_match 1
+tools_mcp_collector_ok 1
+tools_mcp_relay_queue_drops_total 0
+tools_mcp_observability_events_dropped_total 0
+tools_mcp_gateway_http_p95_ms 100
+tools_mcp_tls_certificate_lifetime_seconds 604800
+EOF
+printf 'result=pass\n' > "$evidence"
+
+run() {
+  TOOLS_MCP_CHECKPOINT_TESTING=1 \
+  TOOLS_MCP_CHECKPOINT_TEST_ROOT=$root \
+  TOOLS_MCP_CHECKPOINT_METRICS_FILE=$metrics \
+    deploy/vps/scripts/record-operator-checkpoint "$@"
+}
+
+run 5m "$evidence"
+[ -f "$root/var/lib/tools-mcp/checkpoints/5m/SHA256SUMS" ]
+(cd "$root/var/lib/tools-mcp/checkpoints/5m" && sha256sum -c SHA256SUMS >/dev/null)
+
+sed 's/tools_mcp_gateway_http_p95_ms 100/tools_mcp_gateway_http_p95_ms 101/' "$metrics" > "$root/slow.prom"
+if TOOLS_MCP_CHECKPOINT_TESTING=1 TOOLS_MCP_CHECKPOINT_TEST_ROOT=$root \
+  TOOLS_MCP_CHECKPOINT_METRICS_FILE=$root/slow.prom \
+  deploy/vps/scripts/record-operator-checkpoint 1h "$evidence" 2>/dev/null; then
+  printf 'checkpoint accepted excessive p95\n' >&2
+  exit 1
+fi
+[ ! -e "$root/var/lib/tools-mcp/checkpoints/1h" ]
+
+sed '/tools_mcp_external_vpn_probe_ok/d' "$metrics" > "$root/no-vpn.prom"
+if TOOLS_MCP_CHECKPOINT_TESTING=1 TOOLS_MCP_CHECKPOINT_TEST_ROOT=$root \
+  TOOLS_MCP_CHECKPOINT_METRICS_FILE=$root/no-vpn.prom \
+  deploy/vps/scripts/record-operator-checkpoint 24h "$evidence" 2>/dev/null; then
+  printf 'checkpoint accepted missing VPN evidence\n' >&2
+  exit 1
+fi
+[ ! -e "$root/var/lib/tools-mcp/checkpoints/24h" ]
+
+printf 'operator checkpoint fixture passed\n'

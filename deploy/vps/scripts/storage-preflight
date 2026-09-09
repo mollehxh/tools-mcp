@@ -1,0 +1,42 @@
+#!/bin/sh
+set -eu
+
+fail() { printf 'STOP: %s\n' "$*" >&2; exit 1; }
+root=/var/lib/tools-mcp
+storage=/var/lib/tools-mcp-storage
+reserve_bytes=16106127360
+
+[ -d "$root/gateway" ] && [ -d "$root/workspace" ] && [ -d "$root/home" ] || fail "durable directories are missing"
+projected_growth=0
+check_volume() {
+  name=$1
+  expected_bytes=$2
+  minimum_inodes=$3
+  maximum_inodes=$4
+  target=$root/$name
+  image=$storage/$name.ext4
+  [ -f "$image" ] || fail "$name backing image is missing"
+  mountpoint -q "$target" || fail "$name is not an independent mount"
+  [ "$(findmnt -rn -o FSTYPE --target "$target")" = ext4 ] || fail "$name is not an independent ext4 mount"
+  options=$(findmnt -rn -o OPTIONS --target "$target")
+  case ",$options," in *,nosuid,*) ;; *) fail "$name mount permits setuid" ;; esac
+  case ",$options," in *,nodev,*) ;; *) fail "$name mount permits devices" ;; esac
+  bytes=$(df -B1 --output=size "$target" | awk 'NR == 2 { print $1 }')
+  [ "$bytes" -le "$expected_bytes" ] || fail "$name byte cap exceeds policy"
+  [ "$bytes" -ge $((expected_bytes - 1073741824)) ] || fail "$name byte cap is unexpectedly small"
+  inodes=$(df --output=itotal "$target" | awk 'NR == 2 { print $1 }')
+  [ "$inodes" -ge "$minimum_inodes" ] && [ "$inodes" -le "$maximum_inodes" ] || fail "$name inode cap drifted"
+  allocated=$(du -B1 "$image" | awk '{ print $1 }')
+  apparent=$(stat -c %s "$image")
+  [ "$apparent" -eq "$expected_bytes" ] || fail "$name backing image size drifted"
+  projected_growth=$((projected_growth + apparent - allocated))
+}
+
+check_volume workload 38654705664 1400000 1600000
+check_volume workspace 21474836480 900000 1100000
+check_volume home 4294967296 200000 300000
+available_bytes=$(df -B1 --output=avail /var/lib | awk 'NR == 2 { print $1 }')
+[ $((available_bytes - projected_growth)) -ge "$reserve_bytes" ] || fail "projected workload growth violates the 15 GiB host reserve"
+available_inodes=$(df --output=iavail /var/lib | awk 'NR == 2 { print $1 }')
+[ "$available_inodes" -ge 250000 ] || fail "host inode reserve is below 250000"
+[ ! -S "$root/workspace/docker.sock" ] || fail "container-engine socket exposed in workspace"

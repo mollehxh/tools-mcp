@@ -1,3 +1,5 @@
+#![cfg(target_os = "macos")]
+
 use codex_tools_runtime::contracts::{ExecCommandInput, WriteStdinInput};
 use codex_tools_runtime::process::{OwnerId, ProcessError, ProcessManager, ProcessManagerConfig};
 use mcp_agent_authority::WorkspaceAuthority;
@@ -89,10 +91,7 @@ async fn cancellation_terminates_descendants_in_the_child_process_group() {
         )
         .await
         .unwrap();
-    let child_pid: u32 = fs::read_to_string(fixture.workspace.join("child.pid"))
-        .unwrap()
-        .parse()
-        .unwrap();
+    let child_pid = wait_for_pid(fixture.workspace.join("child.pid")).await;
 
     pending.cancel().await;
     let exited = tokio::time::timeout(Duration::from_secs(2), async {
@@ -116,6 +115,46 @@ async fn cancellation_terminates_descendants_in_the_child_process_group() {
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn administrative_termination_kills_a_published_session_process_tree() {
+    let fixture = RuntimeFixture::new();
+    let manager = fixture.manager(1, Duration::from_mins(5));
+    let owner = OwnerId::from("oauth-grant");
+    let session_id = start(
+        &manager,
+        &owner,
+        "sleep 30 & child=$!; printf '%s' \"$child\" > revoked-child.pid; wait",
+    )
+    .await;
+    let child_pid = wait_for_pid(fixture.workspace.join("revoked-child.pid")).await;
+
+    manager.terminate(&owner, session_id).await.unwrap();
+    let exited = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if !std::process::Command::new("/bin/kill")
+                .args(["-0", &child_pid.to_string()])
+                .status()
+                .is_ok_and(|status| status.success())
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(
+        exited.is_ok(),
+        "descendant {child_pid} survived authority revocation"
+    );
+    assert!(matches!(
+        manager
+            .write_stdin(&owner, WriteStdinInput::poll(session_id))
+            .await,
+        Err(ProcessError::UnknownSession { .. })
+    ));
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_kills_descendant_after_direct_child_exits() {
     let fixture = RuntimeFixture::new();
     let manager = fixture.manager(1, Duration::from_mins(5));
@@ -127,10 +166,7 @@ async fn shutdown_kills_descendant_after_direct_child_exits() {
         )
         .await
         .unwrap();
-    let child_pid: u32 = fs::read_to_string(fixture.workspace.join("child.pid"))
-        .unwrap()
-        .parse()
-        .unwrap();
+    let child_pid = wait_for_pid(fixture.workspace.join("child.pid")).await;
     assert!(pending.handoff().await.unwrap().session_id.is_some());
 
     tokio::time::timeout(Duration::from_secs(2), manager.shutdown())
@@ -162,6 +198,23 @@ fn long_command(script: &str) -> ExecCommandInput {
         shell: Some("/bin/sh".to_owned()),
         login: Some(false),
     }
+}
+
+async fn wait_for_pid(path: std::path::PathBuf) -> u32 {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Ok(pid) = fs::read_to_string(&path).and_then(|value| {
+                value
+                    .parse()
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+            }) {
+                break pid;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("child did not publish a PID at {}", path.display()))
 }
 
 async fn start(manager: &ProcessManager, owner: &OwnerId, script: &str) -> i32 {

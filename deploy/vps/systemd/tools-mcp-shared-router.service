@@ -1,0 +1,32 @@
+[Unit]
+Description=Exact-path router for the shared ngrok development domain
+After=network-online.target docker.service tools-mcp-gateway.service
+Requires=docker.service tools-mcp-gateway.service
+
+[Service]
+Type=notify
+ExecStartPre=/opt/tools-mcp/current/libexec/render-shared-router
+ExecStart=/usr/sbin/haproxy -Ws -f /run/tools-mcp-ingress/haproxy.cfg -p /run/tools-mcp-ingress/haproxy.pid
+ExecReload=/opt/tools-mcp/current/libexec/render-shared-router
+ExecReload=/bin/kill -USR2 $MAINPID
+Restart=on-failure
+RestartSec=2s
+KillMode=mixed
+TimeoutStopSec=10s
+LimitCORE=0
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+RestrictSUIDSGID=yes
+RuntimeDirectory=tools-mcp-ingress
+RuntimeDirectoryMode=0750
+ReadWritePaths=/run/tools-mcp-ingress
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

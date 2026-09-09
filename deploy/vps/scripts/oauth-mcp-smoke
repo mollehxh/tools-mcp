@@ -1,0 +1,254 @@
+#!/usr/bin/python3
+"""Private deployment smoke: OAuth/refresh plus all five MCP tools."""
+
+import base64
+import hashlib
+import http.cookiejar
+import json
+import os
+import ssl
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def b64url(value):
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode()
+
+
+def request(opener, url, data=None, headers=None):
+    encoded = None if data is None else urllib.parse.urlencode(data).encode()
+    try:
+        return opener.open(urllib.request.Request(url, encoded, headers or {}), timeout=10)
+    except urllib.error.HTTPError as error:
+        if error.code in (302, 303):
+            return error
+        raise RuntimeError(f"HTTP {error.code}: {error.read(2048)!r}") from error
+
+
+def nested(value, key):
+    if isinstance(value, dict):
+        if key in value:
+            return value[key]
+        for child in value.values():
+            found = nested(child, key)
+            if found is not None:
+                return found
+    if isinstance(value, list):
+        for child in value:
+            found = nested(child, key)
+            if found is not None:
+                return found
+    return None
+
+
+def main():
+    if len(sys.argv) != 5:
+        raise SystemExit(
+            "usage: oauth-mcp-smoke BASE_URL OWNER_SECRET_FILE CLIENT_ID REDIRECT_URI"
+        )
+    base = sys.argv[1].rstrip("/")
+    with open(sys.argv[2], "rb") as source:
+        owner_secret = source.read().strip().decode()
+    context = ssl.create_default_context()
+    if ca_file := os.environ.get("TOOLS_MCP_SMOKE_CA_FILE"):
+        context.load_verify_locations(cafile=ca_file)
+    cookies = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(cookies),
+        urllib.request.HTTPSHandler(context=context),
+        NoRedirect(),
+    )
+    client_id = sys.argv[3]
+    redirect_uri = sys.argv[4]
+    resource = f"{base}/mcp"
+    verifier = b64url(os.urandom(48))
+    challenge = b64url(hashlib.sha256(verifier.encode()).digest())
+    query = urllib.parse.urlencode(
+        {
+            "response_type": "code",
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "resource": resource,
+            "scope": "offline_access",
+            "state": "private-smoke",
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+        }
+    )
+    page = request(opener, f"{base}/authorize?{query}").read().decode()
+    marker = 'name="request_id" value="'
+    request_id = page.split(marker, 1)[1].split('"', 1)[0]
+    redirect = request(
+        opener,
+        f"{base}/authorize",
+        {
+            "request_id": request_id,
+            "owner_secret": owner_secret,
+            "decision": "approve",
+        },
+    ).headers["Location"]
+    code = urllib.parse.parse_qs(urllib.parse.urlparse(redirect).query)["code"][0]
+    tokens = json.load(
+        request(
+            opener,
+            f"{base}/token",
+            {
+                "grant_type": "authorization_code",
+                "client_id": client_id,
+                "code": code,
+                "redirect_uri": redirect_uri,
+                "code_verifier": verifier,
+                "resource": resource,
+            },
+        )
+    )
+    for _ in range(2):
+        tokens = json.load(
+            request(
+                opener,
+                f"{base}/token",
+                {
+                    "grant_type": "refresh_token",
+                    "client_id": client_id,
+                    "refresh_token": tokens["refresh_token"],
+                    "resource": resource,
+                },
+            )
+        )
+
+    initialize_payload = {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2026-07-28",
+            "capabilities": {},
+            "clientInfo": {"name": "vps-private-smoke", "version": "1"},
+        },
+    }
+    initialize_response = json.load(
+        opener.open(
+            urllib.request.Request(
+                f"{base}/mcp",
+                json.dumps(initialize_payload).encode(),
+                {
+                    "Authorization": f"Bearer {tokens['access_token']}",
+                    "Accept": "application/json, text/event-stream",
+                    "Content-Type": "application/json",
+                    "MCP-Protocol-Version": "2026-07-28",
+                    "Mcp-Method": "initialize",
+                    "X-OpenAI-Subject": "private-owner",
+                    "X-OpenAI-Session": "private-vps-smoke",
+                },
+            ),
+            timeout=15,
+        )
+    )
+    instructions = nested(initialize_response, "instructions")
+    if not isinstance(instructions, str) or "gh auth login --web" not in instructions:
+        raise RuntimeError(
+            f"initialize did not expose self-service CLI auth instructions: {initialize_response!r}"
+        )
+
+    sequence = 0
+
+    def call(name, arguments):
+        nonlocal sequence
+        for _ in range(3):
+            sequence += 1
+            payload = {
+                "jsonrpc": "2.0",
+                "id": sequence,
+                "method": "tools/call",
+                "params": {
+                    "name": name,
+                    "arguments": arguments,
+                    "_meta": {
+                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                        "io.modelcontextprotocol/clientInfo": {
+                            "name": "vps-private-smoke",
+                            "version": "1",
+                        },
+                        "io.modelcontextprotocol/clientCapabilities": {},
+                    },
+                },
+            }
+            headers = {
+                "Authorization": f"Bearer {tokens['access_token']}",
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+                "MCP-Protocol-Version": "2026-07-28",
+                "Mcp-Method": "tools/call",
+                "Mcp-Name": name,
+                "X-OpenAI-Subject": "private-owner",
+                "X-OpenAI-Session": "private-vps-smoke",
+            }
+            response = json.load(
+                opener.open(
+                    urllib.request.Request(
+                        f"{base}/mcp",
+                        json.dumps(payload).encode(),
+                        headers,
+                    ),
+                    timeout=15,
+                )
+            )
+            if nested(response, "error") != "backend_changed":
+                break
+        else:
+            raise RuntimeError(f"{name} exceeded backend_changed retry budget")
+        if response.get("error") or nested(response, "isError") is True:
+            raise RuntimeError(f"{name} failed: {response!r}")
+        return response
+
+    listed = call("skills.list", {"scope": "system"})
+    package = nested(listed, "package")
+    resource_name = nested(listed, "main_resource")
+    if not package or not resource_name:
+        raise RuntimeError("system skill was not listed")
+    call(
+        "exec_command",
+        {
+            "cmd": "rm -f hybrid-smoke.txt",
+            "shell": "/bin/sh",
+            "login": False,
+            "yield_time_ms": 100,
+        },
+    )
+    execution = call(
+        "exec_command",
+        {
+            "cmd": "printf vps-ready; sleep 3; printf follow-up",
+            "shell": "/bin/sh",
+            "login": False,
+            "yield_time_ms": 100,
+        },
+    )
+    session_id = nested(execution, "session_id")
+    if not isinstance(session_id, int):
+        raise RuntimeError(f"exec_command did not yield a terminal: {execution!r}")
+    follow_up = call("write_stdin", {"session_id": session_id, "yield_time_ms": 5000})
+    if "follow-up" not in json.dumps(follow_up):
+        raise RuntimeError("write_stdin did not return follow-up output")
+    call(
+        "apply_patch",
+        {
+            "patch": "*** Begin Patch\n*** Add File: hybrid-smoke.txt\n+hybrid-vps-ok\n*** End Patch"
+        },
+    )
+    call(
+        "skills.read",
+        {"scope": "system", "package": package, "resource": resource_name},
+    )
+    print("oauth-refresh-and-five-tools-ok")
+
+
+if __name__ == "__main__":
+    main()

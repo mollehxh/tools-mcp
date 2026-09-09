@@ -1,0 +1,34 @@
+#!/bin/sh
+set -eu
+
+fail() { printf 'STOP: %s\n' "$*" >&2; exit 1; }
+[ "$(id -u)" -ne 0 ] || fail "run as tools-mcp-workload, never root"
+image=${TOOLS_MCP_IMAGE:?TOOLS_MCP_IMAGE must be an immutable digest reference}
+container=${TOOLS_MCP_CONTAINER:-tools-mcp-workspace}
+workspace=${TOOLS_MCP_WORKSPACE:-/var/lib/tools-mcp/workspace}
+persistent_home=${TOOLS_MCP_PERSISTENT_HOME:-/var/lib/tools-mcp/home}
+memory=${TOOLS_MCP_CONTAINER_MEMORY:-2560m}
+cpus=${TOOLS_MCP_CONTAINER_CPUS:-1.5}
+pids=${TOOLS_MCP_CONTAINER_PIDS:-512}
+case "$image" in *@sha256:*|sha256:*) ;; *) fail "image reference is not digest-pinned" ;; esac
+podman container exists "$container" && fail "container already exists; upgrades are explicit"
+
+podman create \
+  --name "$container" \
+  --hostname "$container" \
+  --user 0:0 \
+  --network slirp4netns:allow_host_loopback=false \
+  --pid private \
+  --ipc private \
+  --cap-drop all \
+  --cap-add chown,dac_override,fowner,fsetid,setgid,setuid \
+  --security-opt no-new-privileges \
+  --read-only=false \
+  --memory "$memory" \
+  --cpus "$cpus" \
+  --pids-limit "$pids" \
+  --ulimit nofile=4096:4096 \
+  --ulimit core=0:0 \
+  --volume "$workspace:/workspace:rw,rprivate" \
+  --volume "$persistent_home:/home/developer:rw,rprivate" \
+  "$image"

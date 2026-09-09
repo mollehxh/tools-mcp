@@ -1,0 +1,62 @@
+#!/bin/sh
+set -eu
+
+test_root=${TOOLS_MCP_RECOVERY_TEST_ROOT:-}
+if [ -n "$test_root" ]; then
+  [ "${TOOLS_MCP_RECOVERY_TESTING:-}" = 1 ] || {
+    printf 'STOP: test root requires TOOLS_MCP_RECOVERY_TESTING=1\n' >&2
+    exit 1
+  }
+  case "$test_root" in /*) ;; *) printf 'STOP: test root must be absolute\n' >&2; exit 1 ;; esac
+  [ -d "$test_root" ] || { printf 'STOP: test root does not exist\n' >&2; exit 1; }
+else
+  [ "$(id -u)" -eq 0 ] || { printf 'STOP: backup must run as root\n' >&2; exit 1; }
+fi
+state=$test_root/var/lib/tools-mcp/gateway
+backup_root=$test_root/var/lib/tools-mcp/backups
+config=$test_root/etc/tools-mcp
+runner=$test_root/var/lib/tools-mcp/runner
+issuer=$test_root/root/.tools-mcp-ca
+copy_state() {
+  if cp --reflink=auto --preserve=mode,ownership,timestamps "$1" "$2" 2>/dev/null; then
+    return
+  fi
+  cp -p "$1" "$2"
+}
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+destination="$backup_root/$stamp"
+systemctl is-active --quiet tools-mcp-gateway.service && {
+  printf 'STOP: quiesce gateway writers before a recovery-set backup\n' >&2
+  exit 1
+}
+staging=$(mktemp -d "$backup_root/.${stamp}.partial.XXXXXX")
+cleanup() { rm -rf -- "$staging"; }
+trap cleanup EXIT HUP INT TERM
+sqlite3 "$state/gateway.sqlite3" 'PRAGMA wal_checkpoint(TRUNCATE); PRAGMA integrity_check;' |
+  grep -qx ok
+copy_state "$state/gateway.sqlite3" "$staging/"
+if sqlite3 "$staging/gateway.sqlite3" "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'security_revision';" |
+  grep -qx 1; then
+  sqlite3 "$staging/gateway.sqlite3" 'SELECT revision FROM security_revision WHERE singleton = 1;' > "$staging/SECURITY_REVISION"
+else
+  # Databases created before the monotonic security revision migrate from zero.
+  printf '0\n' > "$staging/SECURITY_REVISION"
+fi
+copy_state "$state/allocator.watermark" "$staging/"
+for file in "$config"/*.key-id; do copy_state "$file" "$staging/"; done
+for file in gateway.env runner.env workload.env ngrok.env ngrok.yml metrics.env shared-router.cfg.in; do
+  [ -f "$config/$file" ] || {
+    printf 'STOP: recovery-set configuration is missing %s\n' "$file" >&2
+    exit 1
+  }
+  copy_state "$config/$file" "$staging/"
+done
+copy_state "$config/owner-secret.phc" "$staging/"
+copy_state "$config/token-hash.key" "$staging/"
+for file in "$config"/pki/gateway/* "$runner"/device.* "$runner/relay-ca.pem" "$issuer"/ca.*; do
+  copy_state "$file" "$staging/"
+done
+(cd "$staging" && find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum) > "$staging/SHA256SUMS"
+mv "$staging" "$destination"
+trap - EXIT HUP INT TERM
+find "$backup_root" -mindepth 1 -maxdepth 1 -type d -mtime +14 -exec rm -rf -- {} +

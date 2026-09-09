@@ -1,0 +1,101 @@
+#!/bin/sh
+set -eu
+
+fail() { printf 'STOP: %s\n' "$*" >&2; exit 1; }
+
+[ "$(id -u)" -ne 0 ] || fail "rootful container execution is forbidden"
+container=${TOOLS_MCP_CONTAINER:-tools-mcp-workspace}
+workspace=${TOOLS_MCP_WORKSPACE:-/var/lib/tools-mcp/workspace}
+persistent_home=${TOOLS_MCP_PERSISTENT_HOME:-/var/lib/tools-mcp/home}
+expected_memory=${TOOLS_MCP_CONTAINER_MEMORY_BYTES:-2684354560}
+expected_nano_cpus=${TOOLS_MCP_CONTAINER_NANO_CPUS:-1500000000}
+expected_cpu_max=${TOOLS_MCP_CONTAINER_CPU_MAX:-150000 100000}
+expected_pids=${TOOLS_MCP_CONTAINER_PIDS:-512}
+[ "$(stat -fc %T /sys/fs/cgroup)" = cgroup2fs ] || fail "cgroup v2 is required"
+[ "$(cat /proc/sys/kernel/unprivileged_userns_clone)" = 1 ] || fail "unprivileged user namespaces are disabled"
+[ "$(cat /proc/sys/user/max_user_namespaces)" -gt 0 ] || fail "user namespaces have a zero system limit"
+command -v podman >/dev/null || fail "podman is unavailable"
+podman info --format '{{.Host.Security.Rootless}}' | grep -qx true || fail "Podman is not rootless"
+[ "$(podman info --format '{{.Store.GraphDriverName}}')" = overlay ] || fail "rootless overlay storage is required"
+podman info --format '{{.Host.CgroupsVersion}} {{.Host.CgroupManager}}' |
+  grep -qx 'v2 systemd' || fail "rootless Podman must use delegated systemd cgroup v2"
+
+account=$(id -un)
+check_subid() {
+  file=$1
+  label=$2
+  awk -F: -v account="$account" '
+    $1 == account { selected += 1; start = $2 + 0; count = $3 + 0 }
+    { owner[NR] = $1; first[NR] = $2 + 0; span[NR] = $3 + 0 }
+    END {
+      if (selected != 1 || count < 65536) exit 2
+      finish = start + count
+      for (line = 1; line <= NR; line++) {
+        if (owner[line] == account) continue
+        other_finish = first[line] + span[line]
+        if (start < other_finish && first[line] < finish) exit 3
+      }
+    }
+  ' "$file" || fail "$label range is missing, too small, duplicated, or overlapping"
+}
+check_subid /etc/subuid subuid
+check_subid /etc/subgid subgid
+
+expected_runtime=/run/user/$(id -u)
+[ "${XDG_RUNTIME_DIR:-}" = "$expected_runtime" ] || fail "XDG_RUNTIME_DIR does not match the workload user"
+expected_bus=unix:path=$expected_runtime/bus
+[ "${DBUS_SESSION_BUS_ADDRESS:-}" = "$expected_bus" ] || fail "DBUS session bus does not match the lingering workload user"
+[ "$(stat -c %u "$expected_runtime")" -eq "$(id -u)" ] || fail "runtime directory ownership drifted"
+[ "$(loginctl show-user "$account" -p Linger --value)" = yes ] || fail "workload user lingering is disabled"
+podman unshare cat /proc/self/uid_map | grep -Eq '^ *0 +[0-9]+ +1$' || fail "rootless UID identity mapping is missing"
+podman unshare cat /proc/self/uid_map | grep -Eq '^ *1 +[0-9]+ +65536$' || fail "subordinate UID mapping drifted"
+podman unshare cat /proc/self/gid_map | grep -Eq '^ *1 +[0-9]+ +65536$' || fail "subordinate GID mapping drifted"
+podman unshare test -c /dev/net/tun || fail "rootless network namespace cannot access its admitted TUN device"
+[ -z "$(podman unshare find /dev -xdev -type b -print -quit)" ] || fail "rootless network namespace exposes a host block device"
+podman unshare test ! -e /dev/kmsg || fail "rootless network namespace exposes the kernel log device"
+command -v unshare >/dev/null || fail "unshare is unavailable for the rootless mount probe"
+podman unshare unshare -m sh -c 'mount -t tmpfs tmpfs /tmp && umount /tmp' ||
+  fail "rootless pause namespace cannot create the private slirp tmpfs"
+
+podman inspect "$container" >/dev/null || fail "development container is missing"
+expected_image=${TOOLS_MCP_IMAGE:?TOOLS_MCP_IMAGE must name the admitted image digest}
+case "$expected_image" in sha256:[0-9a-f]*|*@sha256:[0-9a-f]*) ;; *) fail "admitted image is not digest-pinned" ;; esac
+observed_image=$(podman inspect "$container" --format '{{.ImageName}}')
+case "$expected_image" in
+  sha256:*) [ "$observed_image" = "$expected_image" ] || fail "container image digest drifted" ;;
+  *)
+    expected_id=$(podman image inspect "$expected_image" --format '{{.Id}}')
+    [ "$(podman inspect "$container" --format '{{.Image}}')" = "$expected_id" ] || fail "container image digest drifted"
+    ;;
+esac
+
+[ "$(podman inspect "$container" --format '{{.HostConfig.Privileged}}')" = false ] || fail "container became privileged"
+network=$(podman inspect "$container" --format '{{.HostConfig.NetworkMode}}')
+[ "$network" != host ] && [ "$network" != none ] || fail "container network posture drifted"
+[ "$(podman inspect "$container" --format '{{.HostConfig.PidMode}}')" = private ] || fail "container PID namespace drifted"
+[ "$(podman inspect "$container" --format '{{.HostConfig.IpcMode}}')" = private ] || fail "container IPC namespace drifted"
+[ "$(podman inspect "$container" --format '{{.HostConfig.CgroupMode}} {{.HostConfig.Cgroups}}')" = 'private default' ] || fail "container cgroup namespace drifted"
+[ "$(podman inspect "$container" --format '{{.HostConfig.ReadonlyRootfs}}')" = false ] || fail "persistent root layer became read-only"
+podman inspect "$container" --format '{{json .HostConfig.SecurityOpt}}' | grep -q 'no-new-privileges' || fail "no-new-privileges drifted"
+podman inspect "$container" --format '{{json .HostConfig.PortBindings}} {{.HostConfig.PublishAllPorts}}' |
+  grep -qx '{} false' || fail "container unexpectedly publishes workload ports"
+podman inspect "$container" --format '{{json .HostConfig.Devices}} {{json .HostConfig.CapAdd}} {{json .HostConfig.CapDrop}}' |
+  grep -qx '\[\] \[\] \["CAP_KILL","CAP_NET_BIND_SERVICE","CAP_SETFCAP","CAP_SETPCAP","CAP_SYS_CHROOT"\]' ||
+  fail "container devices or minimal capability set drifted"
+podman inspect "$container" --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}}' |
+  grep -Eq "^$expected_memory $expected_nano_cpus $expected_pids\$" || fail "declared cgroup limits drifted"
+
+mounts=$(podman inspect "$container" --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}')
+printf '%s\n' "$mounts" | grep -Fx "$workspace -> /workspace" >/dev/null || fail "workspace mount drifted"
+printf '%s\n' "$mounts" | grep -Fx "$persistent_home -> /home/developer" >/dev/null || fail "home mount drifted"
+[ "$(podman inspect "$container" --format '{{len .Mounts}}')" -eq 2 ] || fail "unexpected host mount exposed to container"
+
+if [ "$(podman inspect "$container" --format '{{.State.Running}}')" = true ]; then
+  podman exec "$container" awk '$1 == "CapEff:" { exit $2 != "00000000000000db" }' /proc/self/status || fail "effective capabilities exceed the package-management set"
+  [ "$(podman exec "$container" cat /sys/fs/cgroup/memory.max)" = "$expected_memory" ] || fail "memory cgroup is not enforced"
+  [ "$(podman exec "$container" cat /sys/fs/cgroup/cpu.max)" = "$expected_cpu_max" ] || fail "CPU cgroup is not enforced"
+  [ "$(podman exec "$container" cat /sys/fs/cgroup/pids.max)" = "$expected_pids" ] || fail "PID cgroup is not enforced"
+  [ "$(podman exec "$container" sh -c 'ulimit -n')" = 4096 ] || fail "file-descriptor limit drifted"
+  [ "$(podman exec "$container" sh -c 'ulimit -c')" = 0 ] || fail "core-dump limit drifted"
+  podman exec "$container" sh -c 'test ! -e /run/podman/podman.sock && test ! -e /var/run/docker.sock' || fail "container engine socket is exposed"
+fi

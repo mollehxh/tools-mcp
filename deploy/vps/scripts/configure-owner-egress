@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+/opt/tools-mcp/current/libexec/configure-egress
+"$(dirname "$0")/owner-ssh-egress"

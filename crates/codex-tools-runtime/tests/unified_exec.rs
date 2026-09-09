@@ -1,3 +1,5 @@
+#![cfg(target_os = "macos")]
+
 use codex_tools_runtime::contracts::{ExecCommandInput, WriteStdinInput};
 use codex_tools_runtime::process::{OwnerId, ProcessManager};
 use mcp_agent_authority::sandbox::{Sandbox, VerifiedSandbox, expected_manifest};

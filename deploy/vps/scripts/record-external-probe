@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+[ "$(id -u)" -eq 0 ] || { printf 'STOP: external probe evidence requires root\n' >&2; exit 1; }
+probe=${1:?usage: record-external-probe ssh|vpn 0|1}
+result=${2:?usage: record-external-probe ssh|vpn 0|1}
+case "$probe" in ssh|vpn) ;; *) printf 'STOP: unknown external probe\n' >&2; exit 1 ;; esac
+case "$result" in 0|1) ;; *) printf 'STOP: probe result must be 0 or 1\n' >&2; exit 1 ;; esac
+
+directory=/var/lib/tools-mcp/metrics/probes
+mkdir -p "$directory"
+staging=$(mktemp "$directory/.$probe.XXXXXX")
+trap 'rm -f "$staging"' EXIT HUP INT TERM
+printf '%s %s\n' "$result" "$(date +%s)" > "$staging"
+chown root:tools-mcp-gateway "$staging"
+chmod 0640 "$staging"
+mv -f "$staging" "$directory/$probe"
+trap - EXIT HUP INT TERM

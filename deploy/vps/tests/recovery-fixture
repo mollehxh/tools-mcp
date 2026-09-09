@@ -1,0 +1,116 @@
+#!/bin/sh
+set -eu
+
+fail() { printf 'recovery fixture failed: %s\n' "$*" >&2; exit 1; }
+for command in sqlite3 openssl sha256sum realpath; do
+  command -v "$command" >/dev/null || fail "missing $command"
+done
+
+fixture=$(mktemp -d)
+cleanup() { rm -rf -- "$fixture"; }
+trap cleanup EXIT HUP INT TERM
+state=$fixture/var/lib/tools-mcp/gateway
+backups=$fixture/var/lib/tools-mcp/backups
+runner=$fixture/var/lib/tools-mcp/runner
+config=$fixture/etc/tools-mcp
+issuer=$fixture/root/.tools-mcp-ca
+fake_bin=$fixture/bin
+mkdir -p "$state" "$backups" "$runner" "$config/pki/gateway" "$issuer" "$fake_bin"
+
+cat > "$fake_bin/systemctl" <<'SH'
+#!/bin/sh
+exit 1
+SH
+chmod 0755 "$fake_bin/systemctl"
+
+sqlite3 "$state/gateway.sqlite3" <<'SQL'
+PRAGMA journal_mode=WAL;
+CREATE TABLE security_revision(singleton INTEGER PRIMARY KEY, revision INTEGER NOT NULL);
+INSERT INTO security_revision VALUES(1, 7);
+CREATE TABLE oauth_access(id INTEGER);
+CREATE TABLE oauth_code(id INTEGER);
+CREATE TABLE oauth_refresh(id INTEGER);
+CREATE TABLE oauth_revoked_family(id INTEGER);
+CREATE TABLE oauth_grant(id INTEGER PRIMARY KEY, revoked_unix INTEGER);
+CREATE TABLE relay_device(id INTEGER PRIMARY KEY, revoked_unix INTEGER);
+CREATE TABLE relay_pending_enrollment(id INTEGER);
+INSERT INTO oauth_access VALUES(1);
+INSERT INTO oauth_code VALUES(1);
+INSERT INTO oauth_refresh VALUES(1);
+INSERT INTO oauth_grant VALUES(1, NULL);
+INSERT INTO relay_device VALUES(1, NULL);
+INSERT INTO relay_pending_enrollment VALUES(1);
+SQL
+printf '42\n' > "$state/allocator.watermark"
+printf '%s\n' '$argon2id$v=19$m=19456,t=2,p=1$fixture$fixture' > "$config/owner-secret.phc"
+head -c 32 /dev/urandom > "$config/token-hash.key"
+printf 'sha256:%s\n' "$(sha256sum "$config/token-hash.key" | awk '{print $1}')" > "$config/token-hash.key-id"
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=recovery-fixture-ca \
+  -keyout "$issuer/ca.key" -out "$issuer/ca.pem" >/dev/null 2>&1
+printf 'sha256:%s\n' "$(openssl x509 -in "$issuer/ca.pem" -outform DER | sha256sum | awk '{print $1}')" \
+  > "$config/device-ca.key-id"
+cp "$issuer/ca.key" "$config/pki/gateway/server.key"
+cp "$issuer/ca.pem" "$config/pki/gateway/server.pem"
+cp "$issuer/ca.pem" "$config/pki/gateway/device-ca.pem"
+cp "$issuer/ca.key" "$runner/device.key"
+cp "$issuer/ca.pem" "$runner/device.pem"
+cp "$issuer/ca.pem" "$runner/relay-ca.pem"
+for file in gateway.env runner.env workload.env ngrok.env ngrok.yml metrics.env shared-router.cfg.in; do
+  printf 'FIXTURE_%s=fixture\n' "$(printf '%s' "$file" | tr '.-' '__')" > "$config/$file"
+done
+
+export TOOLS_MCP_RECOVERY_TESTING=1
+export TOOLS_MCP_RECOVERY_TEST_ROOT=$fixture
+export TOOLS_MCP_RECOVERY_GATEWAY_OWNER
+TOOLS_MCP_RECOVERY_GATEWAY_OWNER=$(id -un)
+export TOOLS_MCP_RECOVERY_GATEWAY_GROUP
+TOOLS_MCP_RECOVERY_GATEWAY_GROUP=$(id -gn)
+export TOOLS_MCP_RECOVERY_WORKLOAD_OWNER=$TOOLS_MCP_RECOVERY_GATEWAY_OWNER
+export TOOLS_MCP_RECOVERY_WORKLOAD_GROUP=$TOOLS_MCP_RECOVERY_GATEWAY_GROUP
+export TOOLS_MCP_RECOVERY_EDGE_GROUP=$TOOLS_MCP_RECOVERY_GATEWAY_GROUP
+export TOOLS_MCP_RECOVERY_ROUTER_GROUP=$TOOLS_MCP_RECOVERY_GATEWAY_GROUP
+PATH=$fake_bin:$PATH
+export PATH
+
+repository=$(CDPATH= cd -- "$(dirname "$0")/../../.." && pwd)
+"$repository/deploy/vps/scripts/backup-state"
+recovery_set=$(find "$backups" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+[ -n "$recovery_set" ] || fail "backup did not create a recovery set"
+
+printf 'corrupt\n' > "$config/owner-secret.phc"
+"$repository/deploy/vps/scripts/restore-state" matched "$recovery_set"
+grep -q '^\$argon2' "$config/owner-secret.phc" || fail "matched restore omitted owner hash"
+grep -q '^FIXTURE_gateway_env=fixture$' "$config/gateway.env" ||
+  fail "matched restore omitted gateway configuration"
+[ "$(sqlite3 "$state/gateway.sqlite3" 'SELECT COUNT(*) FROM oauth_grant WHERE revoked_unix IS NULL;')" -eq 1 ] ||
+  fail "matched restore revoked an active grant"
+[ -f "$runner/device.key" ] || fail "matched restore omitted runner identity"
+
+sqlite3 "$state/gateway.sqlite3" 'UPDATE security_revision SET revision = 8;'
+printf '99\n' > "$state/allocator.watermark"
+if "$repository/deploy/vps/scripts/restore-state" matched "$recovery_set" >/dev/null 2>&1; then
+  fail "matched restore accepted later security writes"
+fi
+"$repository/deploy/vps/scripts/restore-state" stale "$recovery_set"
+[ "$(cat "$state/allocator.watermark")" = 99 ] || fail "stale restore rolled back allocator watermark"
+[ "$(sqlite3 "$state/gateway.sqlite3" 'SELECT COUNT(*) FROM oauth_grant WHERE revoked_unix IS NULL;')" -eq 0 ] ||
+  fail "stale restore resurrected an OAuth grant"
+[ "$(sqlite3 "$state/gateway.sqlite3" 'SELECT COUNT(*) FROM relay_device WHERE revoked_unix IS NULL;')" -eq 0 ] ||
+  fail "stale restore resurrected a relay device"
+[ "$(sqlite3 "$state/gateway.sqlite3" 'SELECT COUNT(*) FROM oauth_access;')" -eq 0 ] ||
+  fail "stale restore retained access tokens"
+[ ! -e "$runner/device.key" ] && [ ! -e "$runner/device.pem" ] ||
+  fail "stale restore retained the runner private identity"
+
+corrupt=$backups/corrupt
+cp -a "$recovery_set" "$corrupt"
+printf 'tampered\n' >> "$corrupt/owner-secret.phc"
+if "$repository/deploy/vps/scripts/restore-state" matched "$corrupt" >/dev/null 2>&1; then
+  fail "restore accepted a checksum mismatch"
+fi
+rm -f -- "$state/allocator.watermark"
+if "$repository/deploy/vps/scripts/restore-state" stale "$recovery_set" >/dev/null 2>&1; then
+  fail "stale restore accepted a missing rollback-excluded watermark"
+fi
+
+printf 'recovery fixture passed matched, stale, tamper, and rollback-exclusion checks\n'

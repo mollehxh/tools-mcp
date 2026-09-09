@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+attempt=0
+while [ "$attempt" -lt 25 ]; do
+  if curl --fail --silent --show-error --insecure --max-time 1 https://127.0.0.1:8443/healthz >/dev/null; then
+    exit 0
+  fi
+  attempt=$((attempt + 1))
+  sleep 0.2
+done
+printf 'STOP: gateway did not become ready within five seconds\n' >&2
+exit 1

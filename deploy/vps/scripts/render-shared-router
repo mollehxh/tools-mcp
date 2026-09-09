@@ -1,0 +1,36 @@
+#!/bin/sh
+set -eu
+
+fail() { printf 'STOP: %s\n' "$*" >&2; exit 1; }
+[ "$(id -u)" -eq 0 ] || fail "shared router rendering requires root"
+command -v docker >/dev/null || fail "Docker client is unavailable"
+command -v haproxy >/dev/null || fail "HAProxy is unavailable"
+
+container=yandex-mail-yandex-mail-mcp-1
+attempt=0
+while [ "$attempt" -lt 60 ]; do
+  if [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null || true)" = true ] &&
+    [ "$(docker inspect -f '{{.State.Health.Status}}' "$container" 2>/dev/null || true)" = healthy ]; then
+    break
+  fi
+  attempt=$((attempt + 1))
+  sleep 1
+done
+[ "$attempt" -lt 60 ] || fail "Yandex Mail container did not become healthy within sixty seconds"
+yandex_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container")
+case "$yandex_ip" in
+  10.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|192.168.*) ;;
+  *) fail "Yandex Mail container does not have one private IPv4 address" ;;
+esac
+
+runtime=/run/tools-mcp-ingress
+template=/etc/tools-mcp/shared-router.cfg.in
+install -d -m 0750 -o root -g haproxy "$runtime"
+temporary=$(mktemp "$runtime/.haproxy.cfg.XXXXXX")
+trap 'rm -f -- "$temporary"' EXIT HUP INT TERM
+sed "s/@YANDEX_IP@/$yandex_ip/g" "$template" > "$temporary"
+chown root:haproxy "$temporary"
+chmod 0640 "$temporary"
+haproxy -c -f "$temporary" >/dev/null
+mv "$temporary" "$runtime/haproxy.cfg"
+trap - EXIT HUP INT TERM

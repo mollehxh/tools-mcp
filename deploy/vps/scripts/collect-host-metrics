@@ -1,0 +1,177 @@
+#!/bin/sh
+set -eu
+
+[ "$(id -u)" -eq 0 ] || { printf 'STOP: host metrics collector must run as root\n' >&2; exit 1; }
+
+output=${TOOLS_MCP_HOST_METRICS_FILE:-/var/lib/tools-mcp/metrics/host.prom}
+database=${TOOLS_MCP_DATABASE:-/var/lib/tools-mcp/gateway/gateway.sqlite3}
+certificate=${TOOLS_MCP_TLS_CERT:-/etc/tools-mcp/pki/gateway/server.pem}
+baseline=${TOOLS_MCP_BASELINE_DIR:-/var/lib/tools-mcp/baseline/current}
+public_origin=${TOOLS_MCP_PUBLIC_ORIGIN:-https://fidela-unsubversive-imaginarily.ngrok-free.dev}
+probe_max_age=${TOOLS_MCP_EXTERNAL_PROBE_MAX_AGE_SECONDS:-600}
+metrics_dir=$(dirname "$output")
+mkdir -p "$metrics_dir"
+staging=$(mktemp "$metrics_dir/.host.prom.XXXXXX")
+trap 'rm -f "$staging"' EXIT HUP INT TERM
+collector_ok=1
+
+emit() {
+  name=$1
+  value=$2
+  case "$value" in ''|*[!0-9.-]*) value=0; collector_ok=0 ;; esac
+  printf '%s %s\n' "$name" "$value" >> "$staging"
+}
+
+sqlite_ok=0
+schema_version=0
+if command -v sqlite3 >/dev/null 2>&1 && [ -f "$database" ]; then
+  [ "$(sqlite3 "$database" 'PRAGMA quick_check;' 2>/dev/null)" = ok ] && sqlite_ok=1 || collector_ok=0
+  schema_version=$(sqlite3 "$database" 'PRAGMA user_version;' 2>/dev/null || printf 0)
+else
+  collector_ok=0
+fi
+emit tools_mcp_sqlite_integrity_ok "$sqlite_ok"
+emit tools_mcp_sqlite_schema_version "$schema_version"
+
+now=$(date +%s)
+newest_backup=$(find /var/lib/tools-mcp/backups -mindepth 1 -maxdepth 1 -type d -printf '%T@\n' 2>/dev/null |
+  sort -nr | awk 'NR == 1 { printf "%.0f", $1 }')
+if [ -n "$newest_backup" ]; then
+  emit tools_mcp_backup_age_seconds "$((now - newest_backup))"
+else
+  emit tools_mcp_backup_age_seconds 0
+  collector_ok=0
+fi
+
+certificate_end=$(openssl x509 -in "$certificate" -noout -enddate 2>/dev/null |
+  sed 's/^notAfter=//' || true)
+certificate_expiry=
+[ -z "$certificate_end" ] || certificate_expiry=$(date -u -d "$certificate_end" +%s 2>/dev/null || true)
+if [ -n "$certificate_expiry" ] && [ "$certificate_expiry" -gt "$now" ]; then
+  emit tools_mcp_tls_certificate_lifetime_seconds "$((certificate_expiry - now))"
+else
+  emit tools_mcp_tls_certificate_lifetime_seconds 0
+  collector_ok=0
+fi
+
+workload_bytes_used=0
+workload_bytes_limit=0
+workload_inodes_used=0
+workload_inodes_limit=0
+for mount in /var/lib/tools-mcp/workload /var/lib/tools-mcp/workspace /var/lib/tools-mcp/home; do
+  if mountpoint -q "$mount"; then
+    set -- $(df -B1 --output=used,size "$mount" | awk 'NR == 2 { print $1, $2 }')
+    workload_bytes_used=$((workload_bytes_used + $1))
+    workload_bytes_limit=$((workload_bytes_limit + $2))
+    set -- $(df --output=iused,itotal "$mount" | awk 'NR == 2 { print $1, $2 }')
+    workload_inodes_used=$((workload_inodes_used + $1))
+    workload_inodes_limit=$((workload_inodes_limit + $2))
+  else
+    collector_ok=0
+  fi
+done
+emit tools_mcp_workload_bytes_used "$workload_bytes_used"
+emit tools_mcp_workload_bytes_limit "$workload_bytes_limit"
+emit tools_mcp_workload_inodes_used "$workload_inodes_used"
+emit tools_mcp_workload_inodes_limit "$workload_inodes_limit"
+emit tools_mcp_host_bytes_available "$(df -B1 --output=avail /var/lib | awk 'NR == 2 { print $1 }')"
+emit tools_mcp_host_inodes_available "$(df --output=iavail /var/lib | awk 'NR == 2 { print $1 }')"
+
+workload_uid=$(id -u tools-mcp-workload 2>/dev/null || printf 0)
+container_pid=$(runuser -u tools-mcp-workload -- env \
+  HOME=/var/lib/tools-mcp/workload XDG_RUNTIME_DIR="/run/user/$workload_uid" \
+  DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$workload_uid/bus" \
+  podman inspect tools-mcp-workspace --format '{{.State.Pid}}' 2>/dev/null || printf 0)
+cgroup_path=
+if [ "$container_pid" -gt 0 ] && [ -r "/proc/$container_pid/cgroup" ]; then
+  cgroup_relative=$(awk -F: '$1 == "0" { print $3 }' "/proc/$container_pid/cgroup")
+  cgroup_path=/sys/fs/cgroup$cgroup_relative
+fi
+if [ -n "$cgroup_path" ] && [ -d "$cgroup_path" ]; then
+  memory_oom=$(awk '$1 == "oom_kill" { print $2 }' "$cgroup_path/memory.events" 2>/dev/null || printf 0)
+  pids_events=$(awk '$1 == "max" { print $2 }' "$cgroup_path/pids.events" 2>/dev/null || printf 0)
+  cpu_pressure=$(awk '$1 == "some" { for (i=1; i<=NF; i++) if ($i ~ /^total=/) { sub(/^total=/, "", $i); print $i } }' "$cgroup_path/cpu.pressure" 2>/dev/null || printf 0)
+else
+  memory_oom=0
+  pids_events=0
+  cpu_pressure=0
+  collector_ok=0
+fi
+emit tools_mcp_cgroup_memory_oom_total "$memory_oom"
+emit tools_mcp_cgroup_pids_events_total "$pids_events"
+emit tools_mcp_cgroup_cpu_pressure_micros_total "$cpu_pressure"
+
+journal_bytes=$(journalctl --no-pager --output=cat --since='24 hours ago' \
+  -u tools-mcp-gateway.service -u tools-mcp-runner.service \
+  -u tools-mcp-container.service -u tools-mcp-shared-router.service \
+  -u tools-mcp-ngrok.service 2>/dev/null | wc -c | tr -d ' ')
+emit tools_mcp_journal_bytes "$journal_bytes"
+emit tools_mcp_gateway_restart_count "$(systemctl show tools-mcp-gateway.service -p NRestarts --value 2>/dev/null || printf 0)"
+
+fingerprint_docker() {
+  {
+    docker version --format '{{.Server.Version}}' 2>/dev/null || printf unavailable
+    if [ -f /etc/docker/daemon.json ]; then sha256sum /etc/docker/daemon.json; else printf 'daemon-config-absent\n'; fi
+  } | sha256sum | awk '{ print $1 }'
+}
+
+fingerprint_amnezia() {
+  command -v jq >/dev/null 2>&1 || return 1
+  ids=$(docker ps -a --filter name=amnezia --quiet)
+  [ -n "$ids" ] || return 1
+  docker inspect $ids 2>/dev/null | jq -cS \
+    'map({Id,Image,Name,Config,HostConfig,Mounts,Networks:.NetworkSettings.Networks})' |
+    sha256sum | awk '{ print $1 }'
+}
+
+docker_match=0
+amnezia_match=0
+if [ -r "$baseline/docker-static.sha256" ] && [ "$(fingerprint_docker)" = "$(cat "$baseline/docker-static.sha256")" ]; then
+  docker_match=1
+else
+  collector_ok=0
+fi
+if [ -r "$baseline/amnezia-static.sha256" ] && [ "$(fingerprint_amnezia || true)" = "$(cat "$baseline/amnezia-static.sha256")" ]; then
+  amnezia_match=1
+else
+  collector_ok=0
+fi
+emit tools_mcp_docker_baseline_match "$docker_match"
+emit tools_mcp_amnezia_baseline_match "$amnezia_match"
+
+status() { curl --silent --show-error --max-time 10 --output /dev/null --write-out '%{http_code}' "$1" 2>/dev/null || printf 000; }
+yandex_ok=0
+route_ok=0
+[ "$(status "$public_origin/yandex-mail/mcp")" = 401 ] && \
+  [ "$(status "$public_origin/.well-known/oauth-protected-resource/yandex-mail/mcp")" = 200 ] && yandex_ok=1
+if [ "$yandex_ok" -eq 1 ] && \
+  [ "$(status "$public_origin/mcp")" = 401 ] && \
+  [ "$(status "$public_origin/.well-known/oauth-protected-resource/mcp")" = 200 ] && \
+  [ "$(status "$public_origin/not-a-route")" = 404 ] && \
+  [ "$(status "$public_origin/yandex-mail/mcp/extra")" = 404 ]; then
+  route_ok=1
+else
+  collector_ok=0
+fi
+emit tools_mcp_yandex_mail_route_probe_ok "$yandex_ok"
+emit tools_mcp_shared_route_matrix_ok "$route_ok"
+
+external_probe() {
+  probe=$1
+  record=/var/lib/tools-mcp/metrics/probes/$probe
+  [ -r "$record" ] || { printf 0; return; }
+  set -- $(cat "$record")
+  [ "$#" -eq 2 ] && [ "$1" = 1 ] && [ "$((now - $2))" -le "$probe_max_age" ] && printf 1 || printf 0
+}
+ssh_ok=$(external_probe ssh)
+vpn_ok=$(external_probe vpn)
+[ "$ssh_ok" -eq 1 ] || collector_ok=0
+[ "$vpn_ok" -eq 1 ] || collector_ok=0
+emit tools_mcp_external_ssh_probe_ok "$ssh_ok"
+emit tools_mcp_external_vpn_probe_ok "$vpn_ok"
+emit tools_mcp_collector_ok "$collector_ok"
+
+chown root:tools-mcp-gateway "$staging"
+chmod 0640 "$staging"
+mv -f "$staging" "$output"
+trap - EXIT HUP INT TERM

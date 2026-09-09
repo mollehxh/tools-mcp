@@ -1,0 +1,93 @@
+#!/bin/sh
+set -eu
+
+fail() { printf 'STOP: %s\n' "$*" >&2; exit 1; }
+[ "${1:-}" = --apply ] && [ "$#" -eq 2 ] || fail "usage: provision-workload-storage --apply CHECKPOINT_DIRECTORY"
+[ "$(id -u)" -eq 0 ] || fail "storage provisioning requires root"
+checkpoint=$2
+case "$checkpoint" in /*) ;; *) fail "checkpoint path must be absolute" ;; esac
+[ ! -e "$checkpoint" ] || fail "checkpoint path already exists"
+for service in tools-mcp-runner tools-mcp-container; do
+  if systemctl is-active --quiet "$service"; then
+    fail "$service must be stopped"
+  fi
+done
+for command in mkfs.ext4 mount mountpoint umount findmnt rsync truncate; do
+  command -v "$command" >/dev/null || fail "$command is unavailable"
+done
+
+storage=/var/lib/tools-mcp-storage
+reserve_bytes=16106127360
+total_bytes=64424509440
+available_bytes=$(df -B1 --output=avail /var/lib | awk 'NR == 2 { print $1 }')
+[ "$available_bytes" -ge $((total_bytes + reserve_bytes)) ] || fail "projected workload cap would violate the 15 GiB host reserve"
+for name in workload workspace home; do
+  target=/var/lib/tools-mcp/$name
+  [ -d "$target" ] || fail "$target is missing"
+  if mountpoint -q "$target"; then
+    fail "$target is already a mount point"
+  fi
+  [ ! -e "$storage/$name.ext4" ] || fail "$storage/$name.ext4 already exists"
+done
+
+install -d -m 0700 "$checkpoint" "$checkpoint/originals" "$checkpoint/rejected-images"
+cp -a /etc/fstab "$checkpoint/fstab.before"
+ss -H -lntup > "$checkpoint/listeners.before"
+docker ps --no-trunc --format '{{json .}}' > "$checkpoint/docker.before"
+docker inspect $(docker ps --filter name=amnezia --quiet) > "$checkpoint/amnezia.before"
+install -d -m 0700 "$storage"
+
+rollback() {
+  trap - EXIT HUP INT TERM
+  cp -a "$checkpoint/fstab.before" /etc/fstab
+  for name in home workspace workload; do
+    target=/var/lib/tools-mcp/$name
+    mountpoint -q "$target" && umount "$target" || true
+    rmdir "$target" 2>/dev/null || true
+    [ ! -d "$checkpoint/originals/$name" ] || mv "$checkpoint/originals/$name" "$target"
+    [ ! -e "$storage/$name.ext4" ] || mv "$storage/$name.ext4" "$checkpoint/rejected-images/$name.ext4"
+  done
+  printf 'ROLLBACK: original workload storage restored; rejected images retained at %s\n' "$checkpoint/rejected-images" >&2
+}
+trap rollback EXIT HUP INT TERM
+
+create_volume() {
+  name=$1
+  size=$2
+  inodes=$3
+  target=/var/lib/tools-mcp/$name
+  image=$storage/$name.ext4
+  original=$checkpoint/originals/$name
+  mv "$target" "$original"
+  install -d -m 0700 "$target"
+  truncate -s "$size" "$image"
+  mkfs.ext4 -q -F -m 0 -N "$inodes" -L "tools-mcp-$name" "$image"
+  mount -o loop,nosuid,nodev "$image" "$target"
+  chown --reference="$original" "$target"
+  chmod --reference="$original" "$target"
+  rsync -aHAX --numeric-ids "$original/" "$target/"
+}
+
+create_volume workload 36G 1500000
+create_volume workspace 20G 1000000
+create_volume home 4G 262144
+
+fstab_staged=$(mktemp)
+awk '
+  $0 == "# tools-mcp bounded workload storage begin" { skip = 1; next }
+  $0 == "# tools-mcp bounded workload storage end" { skip = 0; next }
+  !skip { print }
+' /etc/fstab > "$fstab_staged"
+{
+  printf '%s\n' '# tools-mcp bounded workload storage begin'
+  printf '%s\n' '/var/lib/tools-mcp-storage/workload.ext4 /var/lib/tools-mcp/workload ext4 loop,nosuid,nodev 0 2'
+  printf '%s\n' '/var/lib/tools-mcp-storage/workspace.ext4 /var/lib/tools-mcp/workspace ext4 loop,nosuid,nodev 0 2'
+  printf '%s\n' '/var/lib/tools-mcp-storage/home.ext4 /var/lib/tools-mcp/home ext4 loop,nosuid,nodev 0 2'
+  printf '%s\n' '# tools-mcp bounded workload storage end'
+} >> "$fstab_staged"
+install -o root -g root -m 0644 "$fstab_staged" /etc/fstab
+rm -f "$fstab_staged"
+mount -a -f
+
+trap - EXIT HUP INT TERM
+printf 'READY: bounded storage is mounted; originals retained at %s until the soak gate\n' "$checkpoint/originals"

@@ -1,10 +1,48 @@
-# Installing mcp-agent on macOS
+# Installing tools-mcp local workers
 
-This release supports macOS only. Linux and Windows packaging and native
-sandbox claims are deferred; `xtask package` fails instead of emitting an
-artifact on those hosts.
+The first release ships native local-worker artifacts for macOS and Windows.
+Linux local-worker packaging remains deferred; Linux gateway and VPS-runner
+artifacts are separate. See `windows-installation.md` for the native Windows
+boundary and its explicit live-test caveat, `hybrid-routing.md` for automatic
+local/VPS selection, and `vps-deployment.md` for the server topology.
 
-## Build a native package
+## Install the local command
+
+The supported user-facing installation is the npm package. It selects the
+matching native macOS or Windows artifact; Node is only the launcher and does
+not execute tools itself:
+
+```sh
+npm install --global tools-mcp
+```
+
+After the one-time device enrollment below, save the relay configuration once:
+
+```sh
+tools-mcp setup \
+  --relay-url wss://178.215.236.207:8444/relay \
+  --relay-ca "$HOME/.config/tools-mcp/relay-ca.pem" \
+  --device-cert "$HOME/.config/tools-mcp/laptop-main.pem" \
+  --device-key "$HOME/.config/tools-mcp/laptop-main.key" \
+  --device-id laptop-main
+```
+
+Daily startup is deliberately a bare command. The current directory becomes
+the immutable workspace for that launch:
+
+```sh
+cd ~/dev/some-project
+tools-mcp
+```
+
+Configuration is stored with user-only permissions under
+`~/Library/Application Support/tools-mcp/config.json` on macOS or
+`%APPDATA%\\tools-mcp\\config.json` on Windows. A configured PEM key must have
+mode `0600`; only its absolute path is stored in the config. Omitting
+`--device-key` retains the platform key-store flow, where the private device key remains
+non-exportable through Keychain/CNG.
+
+## Build a native package from source
 
 Install the pinned Rust toolchain from `rust-toolchain.toml`, then run:
 
@@ -45,6 +83,51 @@ The workspace is fixed to the launch directory for the lifetime of the
 process. Source-build tests may use `--release-dir`; that override is a
 development seam and is not the installed-package workflow.
 
+## One-time hybrid enrollment and daily startup
+
+Enrollment is a human-controlled local-terminal plus VPS-SSH ceremony. It is
+not an MCP tool and must never be delegated to a model call. On the local
+computer, choose a portable device ID and create a CSR backed by the platform's
+non-exportable key store:
+
+```sh
+tools-mcp enroll-device --device-id laptop-main --csr-output laptop-main.csr
+openssl req -in laptop-main.csr -outform DER | shasum -a 256
+```
+
+Copy only the CSR to the VPS. In an SSH session, independently inspect the CSR
+subject, public-key fingerprint, signature, requested device ID and platform;
+then run `tools-mcp-admin approve-device-csr` with an expiry no more than 90
+days away. Copy the resulting certificate chain and the public relay CA back to
+the local computer and validate/install it:
+
+```sh
+tools-mcp install-device-certificate \
+  --device-id laptop-main \
+  --device-cert laptop-main.pem
+```
+
+The native binary still accepts explicit relay arguments for diagnostics and
+source builds. On macOS the key source may be
+`--device-key /absolute/path/to/laptop-main.key` to avoid Keychain prompts, or
+`--device-keychain-label tools-mcp-device:laptop-main` for a non-exportable
+key. On Windows it is `--device-cng-key-name tools-mcp-device:laptop-main`:
+
+```sh
+/absolute/path/to/mcp-agent \
+  --relay-url wss://178.215.236.207:8444/relay \
+  --relay-ca /absolute/path/to/relay-ca.pem \
+  --device-cert /absolute/path/to/laptop-main.pem \
+  --device-key /absolute/path/to/laptop-main.key \
+  --device-id laptop-main
+```
+
+The newest successful launch becomes current and immediately fences the old
+launch. If no enrolled local command is healthy, new calls use the VPS. A
+`backend_changed` response is intentionally non-executing: inspect its opaque
+context and retry once. `no_backend` means neither local nor verified VPS
+execution is eligible; do not fall back to host execution.
+
 ## Tool and skill workflow
 
 The server exposes exactly five model-visible tools:
@@ -75,8 +158,16 @@ Install into the selected project with the original `--dest` option:
 python3 "$MCP_AGENT_SYSTEM_SKILLS_ROOT/skill-installer/scripts/install-skill-from-github.py" \
   --repo OWNER/REPOSITORY \
   --path path/to/skill \
-  --dest "/absolute/path/to/workspace/.agents/skills"
+  --dest "/absolute/path/to/repository/.agents/skills"
 ```
+
+For a routed multi-repository workspace, an accepted `exec_command` with an
+explicit `workdir` selects the nearest Git ancestor inside that MCP session.
+Later `skills.list` and `skills.read` project-scope calls use that repository's
+`.agents/skills`. The launch workspace remains the default until a repository
+is selected. Discovery never recursively combines sibling repositories, and a
+project handle or cursor fails closed after that session selects another
+repository. Global and system skills are unaffected.
 
 The script also accepts a GitHub tree `--url`, multiple `--path` values,
 `--ref`, and `--method auto|download|git`. It preserves upstream behavior:

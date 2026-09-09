@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+container=${TOOLS_MCP_CONTAINER:-tools-mcp-workspace}
+/opt/tools-mcp/current/libexec/rootless-preflight
+podman exec "$container" tools-mcp-tool-versions >/dev/null
+podman exec "$container" sh -c 'test ! -e /run/podman/podman.sock && test ! -e /var/run/docker.sock'
+pid=$(podman inspect "$container" --format '{{.State.Pid}}')
+podman unshare nsenter --target "$pid" --net /usr/sbin/nft list table inet tools_mcp_egress |
+  grep -q 'tools-mcp-private-deny' || { printf 'STOP: egress policy is missing\n' >&2; exit 1; }

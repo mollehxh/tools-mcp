@@ -7,10 +7,6 @@ use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-// Retained for non-macOS backend compatibility. Workspace request authority
-// and the macOS workload sandbox deliberately do not special-case these names.
-pub(crate) const PROTECTED_TOP_LEVEL: [&str; 3] = [".git", ".codex", ".mcp-agent"];
-
 #[derive(Debug, thiserror::Error)]
 pub enum AuthorityError {
     #[error("no trustworthy per-user home directory is available for CODEX_HOME")]
@@ -235,6 +231,50 @@ impl WorkspaceAuthority {
         self.inner.project_skill_anchor.reopen()
     }
 
+    /// Opens the project-skill root for one repository beneath the fixed workspace.
+    /// Every component is reopened without following symlinks.
+    pub fn open_project_skills_at(
+        &self,
+        project_root: &Path,
+    ) -> Result<ServerOperations, OperationError> {
+        let mut current = self.inner.workspace_dir.try_clone()?;
+        for component in validated_relative_components(project_root)? {
+            current = open_dir_component_no_follow(&current, &component)?;
+        }
+        current = open_dir_component_no_follow(&current, OsStr::new(".agents"))?;
+        current = open_dir_component_no_follow(&current, OsStr::new("skills"))?;
+        Ok(ServerOperations::from_dir(current))
+    }
+
+    /// Finds the nearest Git repository at or above a workspace-relative directory.
+    /// A `.git` directory or regular file marks a repository; symlinks fail closed.
+    pub fn nearest_git_project(&self, workdir: &Path) -> Result<Option<PathBuf>, AuthorityError> {
+        let components =
+            validated_relative_components(workdir).map_err(|_| AuthorityError::OutsideWorkspace)?;
+        for depth in (0..=components.len()).rev() {
+            let mut current = self
+                .inner
+                .workspace_dir
+                .try_clone()
+                .map_err(AuthorityError::Setup)?;
+            for component in &components[..depth] {
+                current = open_dir_component_no_follow(&current, component)
+                    .map_err(AuthorityError::Setup)?;
+            }
+            match current.symlink_metadata(".git") {
+                Ok(metadata)
+                    if !metadata.is_symlink() && (metadata.is_dir() || metadata.is_file()) =>
+                {
+                    return Ok(Some(components[..depth].iter().collect()));
+                }
+                Ok(_) => return Err(AuthorityError::InvalidPath),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(AuthorityError::Setup(error)),
+            }
+        }
+        Ok(None)
+    }
+
     pub fn open_global_skills(&self) -> Result<ServerOperations, OperationError> {
         self.inner.global_skill_anchor.reopen()
     }
@@ -250,6 +290,18 @@ impl WorkspaceAuthority {
     pub(crate) fn try_clone_workspace_dir(&self) -> std::io::Result<Dir> {
         self.inner.workspace_dir.try_clone()
     }
+}
+
+fn validated_relative_components(path: &Path) -> Result<Vec<std::ffi::OsString>, OperationError> {
+    path.components()
+        .filter_map(|component| match component {
+            Component::CurDir => None,
+            Component::Normal(name) => Some(Ok(name.to_os_string())),
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                Some(Err(OperationError::InvalidPath))
+            }
+        })
+        .collect()
 }
 
 fn relative_components(
@@ -488,8 +540,9 @@ pub(crate) fn roots_overlap(left: &Path, right: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthorityError, configured_global_skills, roots_overlap};
+    use super::{AuthorityError, WorkspaceAuthority, configured_global_skills, roots_overlap};
     use std::ffi::OsString;
+    use std::fs;
     use std::path::PathBuf;
 
     #[test]
@@ -529,6 +582,75 @@ mod tests {
             &workspace,
             PathBuf::from("/outside/global").as_path()
         ));
+    }
+
+    #[test]
+    fn repository_skill_roots_are_selected_from_the_nearest_git_ancestor() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let global = root.path().join("global");
+        let repository = workspace.join("repository");
+        let nested = repository.join("src/nested");
+        fs::create_dir_all(repository.join(".git")).unwrap();
+        fs::create_dir_all(repository.join(".agents/skills/example")).unwrap();
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(&global).unwrap();
+        let authority =
+            WorkspaceAuthority::with_global_skills(&workspace, global.canonicalize().unwrap())
+                .unwrap();
+
+        assert_eq!(
+            authority
+                .nearest_git_project(PathBuf::from("repository/src/nested").as_path())
+                .unwrap(),
+            Some(PathBuf::from("repository"))
+        );
+        assert!(
+            authority
+                .open_project_skills_at(PathBuf::from("repository").as_path())
+                .unwrap()
+                .read_root()
+                .unwrap()
+                .iter()
+                .any(|entry| entry.name == "example")
+        );
+        assert_eq!(
+            authority
+                .nearest_git_project(PathBuf::from(".").as_path())
+                .unwrap(),
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repository_discovery_rejects_symlinked_paths_and_git_markers() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let global = root.path().join("global");
+        let outside = root.path().join("outside");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&global).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, workspace.join("linked-repository")).unwrap();
+        fs::create_dir_all(workspace.join("bad-repository")).unwrap();
+        symlink(&outside, workspace.join("bad-repository/.git")).unwrap();
+        let authority =
+            WorkspaceAuthority::with_global_skills(&workspace, global.canonicalize().unwrap())
+                .unwrap();
+
+        assert!(
+            authority
+                .nearest_git_project(PathBuf::from("linked-repository").as_path())
+                .is_err()
+        );
+        assert!(
+            authority
+                .nearest_git_project(PathBuf::from("bad-repository").as_path())
+                .is_err()
+        );
     }
 
     #[cfg(windows)]

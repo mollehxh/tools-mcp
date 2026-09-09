@@ -19,7 +19,7 @@ pub struct ReleaseArtifactSpec {
     pub expected_sha256: Option<&'static str>,
 }
 
-pub const REQUIRED_RELEASE_ARTIFACTS: [ReleaseArtifactSpec; 15] = [
+pub const REQUIRED_RELEASE_ARTIFACTS: [ReleaseArtifactSpec; 16] = [
     spec(
         "LICENSE",
         ReleaseArtifactKind::License,
@@ -38,7 +38,26 @@ pub const REQUIRED_RELEASE_ARTIFACTS: [ReleaseArtifactSpec; 15] = [
         0o644,
         Some("155ce30c0b9edeac142dc1659a978b0d5dd65e48f636e251c72493b361500944"),
     ),
-    spec("mcp-agent", ReleaseArtifactKind::Executable, 0o755, None),
+    spec(
+        if cfg!(windows) {
+            "mcp-agent.exe"
+        } else {
+            "mcp-agent"
+        },
+        ReleaseArtifactKind::Executable,
+        0o755,
+        None,
+    ),
+    spec(
+        if cfg!(windows) {
+            "tools-mcp-keygen.exe"
+        } else {
+            "tools-mcp-keygen"
+        },
+        ReleaseArtifactKind::Executable,
+        if cfg!(windows) { 0o644 } else { 0o755 },
+        None,
+    ),
     spec(
         "sandbox-manifest.json",
         ReleaseArtifactKind::SandboxManifest,
@@ -46,8 +65,16 @@ pub const REQUIRED_RELEASE_ARTIFACTS: [ReleaseArtifactSpec; 15] = [
         None,
     ),
     spec(
-        "sandbox/macos-seatbelt.marker",
-        ReleaseArtifactKind::SandboxMarker,
+        if cfg!(windows) {
+            "sandbox/mcp-agent-windows-sandbox.exe"
+        } else {
+            "sandbox/macos-seatbelt.marker"
+        },
+        if cfg!(windows) {
+            ReleaseArtifactKind::Executable
+        } else {
+            ReleaseArtifactKind::SandboxMarker
+        },
         0o644,
         None,
     ),
@@ -169,7 +196,7 @@ pub enum ReleaseError {
     CompatibilityMismatch,
     #[error("release artifact checksum, size, path, or type mismatch")]
     ArtifactMismatch,
-    #[error("only native macOS release artifacts are supported; Linux and Windows are deferred")]
+    #[error("only native macOS and Windows local release artifacts are supported")]
     UnsupportedPlatform,
     #[error("release verification failed")]
     Io(#[from] std::io::Error),
@@ -180,6 +207,8 @@ pub fn current_release_target() -> Option<&'static str> {
     match (std::env::consts::ARCH, std::env::consts::OS) {
         ("aarch64", "macos") => Some("aarch64-apple-darwin"),
         ("x86_64", "macos") => Some("x86_64-apple-darwin"),
+        ("x86_64", "windows") => Some("x86_64-pc-windows-msvc"),
+        ("aarch64", "windows") => Some("aarch64-pc-windows-msvc"),
         _ => None,
     }
 }
@@ -192,7 +221,11 @@ pub fn verify_release(
     let release = release.canonicalize()?;
     let executable = executable.canonicalize()?;
     let packaged_executable = release
-        .join("mcp-agent")
+        .join(if cfg!(windows) {
+            "mcp-agent.exe"
+        } else {
+            "mcp-agent"
+        })
         .canonicalize()
         .map_err(|_| ReleaseError::ArtifactMismatch)?;
     if executable != packaged_executable {
@@ -222,7 +255,7 @@ pub fn verify_release_assets(
         || manifest.package != "mcp-agent"
         || manifest.version != expected_version
         || manifest.target != expected_target
-        || manifest.supported_os != ["macos"]
+        || manifest.supported_os != [std::env::consts::OS]
         || manifest.capability_protocol != CAPABILITY_PROTOCOL
         || manifest.upstream_commit != PINNED_CODEX_COMMIT
         || manifest.source_commit.trim().is_empty()

@@ -76,6 +76,36 @@ fn manifest_carries_protocol_target_checksum_and_pinned_provenance() {
 
     assert_eq!(manifest.capability_protocol, CAPABILITY_PROTOCOL);
     assert_eq!(manifest.upstream_commit, PINNED_CODEX_COMMIT);
+    assert!(!manifest.enforcement.token_model.is_empty());
+    assert!(!manifest.enforcement.process_tree_policy.is_empty());
+    #[cfg(windows)]
+    {
+        assert!(
+            manifest
+                .enforcement
+                .token_model
+                .contains("WRITE_RESTRICTED")
+        );
+        assert!(
+            manifest
+                .enforcement
+                .deny_only_sid_policy
+                .contains("deny-only")
+        );
+        assert!(manifest.enforcement.integrity_policy.contains("8192"));
+        assert!(
+            manifest
+                .enforcement
+                .inherited_handle_policy
+                .contains("stdin/stdout/stderr")
+        );
+        assert!(
+            manifest
+                .enforcement
+                .process_tree_policy
+                .contains("KILL_ON_JOB_CLOSE")
+        );
+    }
     assert!(!manifest.target.is_empty());
     assert_eq!(manifest.artifact_sha256.len(), 64);
     assert_eq!(manifest.policy_sha256.len(), 64);
@@ -247,6 +277,12 @@ fn native_sandbox_allows_every_capability_snapshot_writable_root() {
 #[test]
 fn preflight_fails_when_unix_permissions_could_explain_canary_denial() {
     use std::os::unix::fs::PermissionsExt;
+
+    // A root test process retains DAC override inside bubblewrap's user
+    // namespace, so mode 0444 cannot establish this fixture's premise.
+    if nix::unistd::Uid::effective().is_root() {
+        return;
+    }
 
     let fixture = conformance::Fixture::new();
     let release = fixture.release_dir();

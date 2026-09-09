@@ -20,6 +20,7 @@ const PACKAGE_NAME: &str = "mcp-agent";
 pub struct PackageOptions {
     pub repository_root: PathBuf,
     pub binary_path: PathBuf,
+    pub device_key_helper_path: PathBuf,
     pub output_root: PathBuf,
     pub source_commit: String,
     pub source_tree_state: String,
@@ -36,8 +37,8 @@ pub struct PackageResult {
 
 pub fn ensure_supported_os(os: &str) -> anyhow::Result<()> {
     ensure!(
-        os == "macos",
-        "mcp-agent packaging is macOS-only; Linux and Windows release support is deferred"
+        matches!(os, "macos" | "windows"),
+        "mcp-agent local packaging supports only macOS and Windows"
     );
     Ok(())
 }
@@ -79,9 +80,16 @@ pub fn build() -> anyhow::Result<PackageResult> {
         ]),
         "read source tree state",
     )?;
+    let binary_name = if cfg!(windows) {
+        "mcp-agent.exe"
+    } else {
+        "mcp-agent"
+    };
+    let device_key_helper_path = build_device_key_helper(&repository_root)?;
     assemble(&PackageOptions {
         repository_root: repository_root.clone(),
-        binary_path: repository_root.join("target/release/mcp-agent"),
+        binary_path: repository_root.join("target/release").join(binary_name),
+        device_key_helper_path,
         output_root: repository_root.join("target/release-artifacts"),
         source_commit,
         source_tree_state: if source_status.is_empty() {
@@ -98,7 +106,7 @@ pub fn assemble(options: &PackageOptions) -> anyhow::Result<PackageResult> {
     ensure_supported_os(std::env::consts::OS)?;
     ensure!(
         Some(options.target.as_str()) == current_release_target(),
-        "package target must match the native macOS host"
+        "package target must match the native host"
     );
     ensure!(
         !options.version.trim().is_empty()
@@ -115,8 +123,7 @@ pub fn assemble(options: &PackageOptions) -> anyhow::Result<PackageResult> {
     let staged_release = staging.path().join(&release_name);
     fs::create_dir(&staged_release).context("create staged release directory")?;
 
-    copy_file(&options.binary_path, &staged_release.join(PACKAGE_NAME))?;
-    set_executable(&staged_release.join(PACKAGE_NAME))?;
+    stage_executables(options, &staged_release)?;
     expected_manifest()
         .context("construct native sandbox compatibility manifest")?
         .write_release_relative(&staged_release)
@@ -144,7 +151,7 @@ pub fn assemble(options: &PackageOptions) -> anyhow::Result<PackageResult> {
         package: PACKAGE_NAME.to_owned(),
         version: options.version.clone(),
         target: options.target.clone(),
-        supported_os: vec!["macos".to_owned()],
+        supported_os: vec![std::env::consts::OS.to_owned()],
         capability_protocol: CAPABILITY_PROTOCOL.to_owned(),
         upstream_commit: PINNED_CODEX_COMMIT.to_owned(),
         source_commit: options.source_commit.clone(),
@@ -192,6 +199,50 @@ pub fn assemble(options: &PackageOptions) -> anyhow::Result<PackageResult> {
         archive,
         archive_checksum,
     })
+}
+
+fn stage_executables(options: &PackageOptions, release: &Path) -> anyhow::Result<()> {
+    let packaged_binary = if cfg!(windows) {
+        "mcp-agent.exe"
+    } else {
+        PACKAGE_NAME
+    };
+    copy_file(&options.binary_path, &release.join(packaged_binary))?;
+    set_executable(&release.join(packaged_binary))?;
+    let packaged_key_helper = if cfg!(windows) {
+        "tools-mcp-keygen.exe"
+    } else {
+        "tools-mcp-keygen"
+    };
+    copy_file(
+        &options.device_key_helper_path,
+        &release.join(packaged_key_helper),
+    )?;
+    set_executable(&release.join(packaged_key_helper))
+}
+
+fn build_device_key_helper(repository: &Path) -> anyhow::Result<PathBuf> {
+    if cfg!(target_os = "macos") {
+        let output = repository.join("target/release/tools-mcp-keygen");
+        let module_cache = repository.join("target/swift-module-cache");
+        fs::create_dir_all(&module_cache).context("create Swift module cache")?;
+        let status = Command::new("xcrun")
+            .current_dir(repository)
+            .args(["swiftc", "-O"])
+            .env("CLANG_MODULE_CACHE_PATH", &module_cache)
+            .env("SWIFT_MODULECACHE_PATH", &module_cache)
+            .arg(repository.join("native/macos-keychain-helper/main.swift"))
+            .arg("-o")
+            .arg(&output)
+            .status()
+            .context("compile native macOS Keychain helper")?;
+        ensure!(
+            status.success(),
+            "native macOS Keychain helper build failed"
+        );
+        return Ok(output);
+    }
+    Ok(repository.join("target/release/mcp-agent-windows-sandbox.exe"))
 }
 
 fn copy_system_skill(repository: &Path, release: &Path) -> anyhow::Result<()> {

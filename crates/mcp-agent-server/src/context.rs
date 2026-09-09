@@ -1,30 +1,26 @@
-use codex_tools_runtime::process::{OwnerId, ProcessManager};
-use mcp_agent_authority::WorkspaceAuthority;
-use skill_store::SkillCatalog;
+use mcp_agent_tool_contracts::{CallIdentity, ToolBackend};
 use std::sync::Arc;
 
-/// Long-lived, owner-scoped application capabilities shared by fresh MCP handlers.
+/// Transport adapter context containing only an execution-free backend trait.
 #[derive(Clone)]
 pub struct ApplicationContext {
-    pub(crate) authority: WorkspaceAuthority,
-    pub(crate) processes: Arc<ProcessManager>,
-    pub(crate) catalog: Arc<SkillCatalog>,
-    pub(crate) owner: OwnerId,
+    pub(crate) backend: Arc<dyn ToolBackend>,
 }
 
 impl ApplicationContext {
     #[must_use]
-    pub fn new(
-        authority: WorkspaceAuthority,
-        processes: Arc<ProcessManager>,
-        catalog: Arc<SkillCatalog>,
-        owner: OwnerId,
-    ) -> Self {
-        Self {
-            authority,
-            processes,
-            catalog,
-            owner,
-        }
+    pub fn new<B>(backend: Arc<B>) -> Self
+    where
+        B: ToolBackend + 'static,
+    {
+        Self { backend }
     }
+}
+
+tokio::task_local! {
+    pub(crate) static TRUSTED_CALL_IDENTITY: CallIdentity;
+}
+
+pub(crate) fn current_identity() -> Option<CallIdentity> {
+    TRUSTED_CALL_IDENTITY.try_with(Clone::clone).ok()
 }

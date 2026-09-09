@@ -1,0 +1,25 @@
+[Unit]
+Description=tools-mcp stable free HTTPS edge
+After=network-online.target tools-mcp-shared-router.service
+Requires=tools-mcp-shared-router.service
+
+[Service]
+Type=simple
+User=tools-mcp-edge
+Group=tools-mcp-edge
+EnvironmentFile=/etc/tools-mcp/ngrok.env
+ExecStartPre=/opt/tools-mcp/current/libexec/wait-gateway-ready
+ExecStart=/usr/local/bin/ngrok http http://127.0.0.1:8000 --url https://${TOOLS_MCP_NGROK_DOMAIN} --config /etc/tools-mcp/ngrok.yml --log stdout --log-format logfmt
+Restart=always
+RestartSec=3s
+LimitCORE=0
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictSUIDSGID=yes
+UMask=0077
+
+[Install]
+WantedBy=tools-mcp-public-activation.service

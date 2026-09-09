@@ -1,0 +1,17 @@
+[package]
+name = "mcp-agent-vps-backend"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mcp-agent-local-backend = { path = "../mcp-agent-local-backend" }
+mcp-agent-tool-contracts = { path = "../mcp-agent-tool-contracts" }
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,42 @@
+#!/bin/sh
+set -eu
+
+fail() { printf 'privacy fixture failed: %s\n' "$1" >&2; exit 1; }
+fixture=$(mktemp -d)
+cleanup() { rm -rf -- "$fixture"; }
+trap cleanup EXIT HUP INT TERM
+mkdir -p "$fixture/var/lib/tools-mcp/metrics" \
+  "$fixture/var/lib/tools-mcp/gateway" "$fixture/var/lib/tools-mcp/backups/set"
+canaries=$fixture/canaries
+journal=$fixture/journal
+printf '%s\n' \
+  'RAW_ACCESS_TOKEN_CANARY_9f31' \
+  'Authorization: Bearer header-canary' \
+  '/workspace/private-path-canary' \
+  'command-output-patch-skill-canary' > "$canaries"
+printf 'tools_mcp_collector_ok 1\n' > "$fixture/var/lib/tools-mcp/metrics/host.prom"
+printf 'hashed-only-state\n' > "$fixture/var/lib/tools-mcp/gateway/gateway.sqlite3"
+printf 'matched-recovery-state\n' > "$fixture/var/lib/tools-mcp/backups/set/gateway.sqlite3"
+printf 'safe structured event\n' > "$journal"
+mode=600
+[ "$((0$mode & 077))" -eq 0 ] || fail "POSIX private-mode check rejected 0600"
+mode=640
+[ "$((0$mode & 077))" -ne 0 ] || fail "POSIX private-mode check accepted 0640"
+
+export TOOLS_MCP_PRIVACY_TESTING=1
+export TOOLS_MCP_PRIVACY_TEST_ROOT=$fixture
+export TOOLS_MCP_PRIVACY_JOURNAL_FILE=$journal
+repository=$(CDPATH= cd -- "$(dirname "$0")/../../.." && pwd)
+scanner=$repository/deploy/vps/scripts/privacy-scan
+"$scanner" "$canaries" >/dev/null
+
+printf 'RAW_ACCESS_TOKEN_CANARY_9f31\n' >> "$fixture/var/lib/tools-mcp/metrics/host.prom"
+if "$scanner" "$canaries" >/dev/null 2>&1; then fail "metrics leak passed"; fi
+sed -i.bak '$d' "$fixture/var/lib/tools-mcp/metrics/host.prom"
+rm -f "$fixture/var/lib/tools-mcp/metrics/host.prom.bak"
+printf '/workspace/private-path-canary\n' >> "$fixture/var/lib/tools-mcp/backups/set/gateway.sqlite3"
+if "$scanner" "$canaries" >/dev/null 2>&1; then fail "backup leak passed"; fi
+printf 'matched-recovery-state\n' > "$fixture/var/lib/tools-mcp/backups/set/gateway.sqlite3"
+printf 'Authorization: Bearer header-canary\n' >> "$journal"
+if "$scanner" "$canaries" >/dev/null 2>&1; then fail "journal leak passed"; fi
+printf 'privacy fixture passed clean, metrics, backup, and journal cases\n'

@@ -1,0 +1,35 @@
+[Unit]
+Description=tools-mcp OAuth and MCP gateway
+After=network-online.target tools-mcp-storage.service
+Wants=network-online.target
+Requires=tools-mcp-storage.service
+
+[Service]
+Type=simple
+User=tools-mcp-gateway
+Group=tools-mcp-gateway
+EnvironmentFile=/etc/tools-mcp/gateway.env
+ExecStart=/opt/tools-mcp/current/bin/mcp-agent-gateway
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=30s
+LimitCORE=0
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/tools-mcp/gateway /var/log/tools-mcp
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

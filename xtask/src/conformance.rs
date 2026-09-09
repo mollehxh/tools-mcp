@@ -37,7 +37,7 @@ const SUITES: &[(&str, &[&str])] = &[
         &["test", "-p", "mcp-agent", "--test", "cli"],
     ),
     (
-        "macOS package contract",
+        "native package contract",
         &[
             "test",
             "-p",
@@ -50,11 +50,11 @@ const SUITES: &[(&str, &[&str])] = &[
     ),
 ];
 
-/// Runs the shared macOS conformance gates for the five-tool server and package.
+/// Runs the shared macOS/Windows conformance gates for the five-tool server and package.
 pub fn run() -> anyhow::Result<()> {
     anyhow::ensure!(
-        std::env::consts::OS == "macos",
-        "native conformance currently supports macOS only; Linux and Windows are deferred"
+        matches!(std::env::consts::OS, "macos" | "windows"),
+        "native conformance supports macOS and Windows only"
     );
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     for (name, arguments) in SUITES {
@@ -80,7 +80,7 @@ mod tests {
                 "workspace-write",
                 "five-tool transport",
                 "CLI exposure",
-                "macOS package contract"
+                "native package contract"
             ]
         );
     }

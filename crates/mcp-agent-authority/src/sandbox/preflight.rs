@@ -1,8 +1,11 @@
 use super::{Sandbox, SandboxError, digest};
 use std::fs;
 use std::io::Write;
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
+#[cfg(unix)]
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::Child;
 #[cfg(unix)]
 use std::process::Stdio;
@@ -213,13 +216,13 @@ fn platform_read(sandbox: &Sandbox, path: &Path) -> Result<std::process::Output,
 
 #[cfg(windows)]
 fn platform_read(sandbox: &Sandbox, path: &Path) -> Result<std::process::Output, SandboxError> {
-    Ok(sandbox
+    sandbox
         .command_unverified(
             "cmd.exe",
             &["/d", "/c", "type", &path.to_string_lossy()],
             Path::new("."),
         )?
-        .output()?)
+        .output()
 }
 
 #[cfg(unix)]
@@ -338,6 +341,7 @@ fn platform_listener_bind(sandbox: &Sandbox, _address: &str) -> Result<bool, San
         .success())
 }
 
+#[cfg(unix)]
 fn connect_to_child_listener(
     child: &mut Child,
     port: u16,
@@ -355,6 +359,7 @@ fn connect_to_child_listener(
     }
 }
 
+#[cfg(unix)]
 fn terminate_probe_child(child: &mut Child) {
     let _ = child.kill();
     let _ = child.wait();

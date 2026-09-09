@@ -10,11 +10,28 @@ anyhow.workspace = true
 axum.workspace = true
 codex-tools-runtime = { path = "../codex-tools-runtime" }
 mcp-agent-authority = { path = "../mcp-agent-authority" }
+mcp-agent-local-backend = { path = "../mcp-agent-local-backend" }
+mcp-agent-relay = { path = "../mcp-agent-relay" }
 mcp-agent-server = { path = "../mcp-agent-server" }
+rand.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+rustls-pki-types.workspace = true
+sha2.workspace = true
 skill-store = { path = "../skill-store" }
 thiserror.workspace = true
 tokio.workspace = true
+tokio-rustls.workspace = true
+tokio-tungstenite.workspace = true
 tokio-util.workspace = true
+url.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+rcgen.workspace = true
+security-framework.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+rcgen = { workspace = true, features = ["ring", "x509-parser"] }
 
 [dev-dependencies]
 nix.workspace = true

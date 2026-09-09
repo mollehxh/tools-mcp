@@ -1,0 +1,28 @@
+[package]
+name = "mcp-agent-vps-runner"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+codex-tools-runtime = { path = "../codex-tools-runtime" }
+mcp-agent-authority = { path = "../mcp-agent-authority" }
+mcp-agent-local-backend = { path = "../mcp-agent-local-backend" }
+mcp-agent-relay = { path = "../mcp-agent-relay" }
+mcp-agent-vps-backend = { path = "../mcp-agent-vps-backend" }
+rand.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+rustls-pki-types.workspace = true
+sha2.workspace = true
+skill-store = { path = "../skill-store" }
+tokio.workspace = true
+tokio-rustls.workspace = true
+tokio-tungstenite.workspace = true
+tokio-util.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true

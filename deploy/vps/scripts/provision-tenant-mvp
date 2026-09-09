@@ -1,0 +1,215 @@
+#!/bin/sh
+set -eu
+
+fail() { printf 'STOP: %s\n' "$*" >&2; exit 1; }
+[ "${1:-}" = --apply ] && [ "$#" -eq 6 ] ||
+  fail "usage: provision-tenant-mvp --apply TENANT GATEWAY_PORT RELAY_PORT IMAGE_ARCHIVE IMAGE_DIGEST"
+[ "$(id -u)" -eq 0 ] || fail "tenant provisioning requires root"
+
+tenant=$2
+gateway_port=$3
+relay_port=$4
+image_archive=$5
+image_digest=$6
+case "$tenant" in ''|*[!a-z0-9-]*|-*|*-) fail "tenant id must use lowercase letters, digits, and internal hyphens" ;; esac
+[ "${#tenant}" -le 32 ] || fail "tenant id is too long"
+case "$gateway_port:$relay_port" in *[!0-9:]*|:|*:) fail "ports must be numeric" ;; esac
+[ "$gateway_port" -ge 1024 ] && [ "$gateway_port" -le 65535 ] || fail "gateway port is invalid"
+[ "$relay_port" -ge 1024 ] && [ "$relay_port" -le 65535 ] || fail "relay port is invalid"
+[ "$gateway_port" -ne "$relay_port" ] || fail "gateway and relay ports must differ"
+[ -f "$image_archive" ] || fail "image archive is missing"
+digest_hex=${image_digest#sha256:}
+[ "$image_digest" != "$digest_hex" ] && [ "${#digest_hex}" -eq 64 ] || fail "image digest must be sha256:<64 lowercase hex characters>"
+case "$digest_hex" in *[!0-9a-f]*) fail "image digest must be sha256:<64 lowercase hex characters>" ;; esac
+[ "$tenant" = u1 ] && [ "$gateway_port" -eq 8453 ] && [ "$relay_port" -eq 8456 ] ||
+  fail "this MVP release exposes only tenant u1 on gateway 8453 and relay 8456"
+
+account=tools-mcp-$tenant
+base=/var/lib/tools-mcp-tenants/$tenant
+runtime=$base/runtime
+config=/etc/tools-mcp/tenants/$tenant
+ca_root=/root/.tools-mcp-ca
+release=/opt/tools-mcp/current
+container=tools-mcp-$tenant-workspace
+issuer=https://fidela-unsubversive-imaginarily.ngrok-free.dev/$tenant/
+secret=/root/.tools-mcp-$tenant-owner-secret
+
+for command in flock openssl runuser useradd usermod loginctl podman ss; do
+  command -v "$command" >/dev/null || fail "$command is unavailable"
+done
+exec 9>"/run/lock/tools-mcp-tenant-provision.lock"
+flock -n 9 || fail "another tenant provisioning operation is active"
+[ -s "$ca_root/ca.pem" ] && [ -s "$ca_root/ca.key" ] || fail "device CA is unavailable"
+[ -x "$release/bin/mcp-agent-gateway" ] || fail "gateway binary is unavailable"
+[ -x "$release/bin/mcp-agent-vps-runner" ] || fail "runner binary is unavailable"
+[ -x "$release/bin/tools-mcp-admin" ] || fail "admin binary is unavailable"
+[ -f "$release/system-skills.sha256" ] || fail "system skill manifest is unavailable"
+ss -H -lnt | awk '{print $4}' | grep -Eq ":($gateway_port|$relay_port)$" && fail "one of the tenant ports is already in use"
+
+if ! id "$account" >/dev/null 2>&1; then
+  useradd --system --user-group --home-dir "$runtime" --shell /usr/sbin/nologin "$account"
+else
+  usermod --home "$runtime" --shell /usr/sbin/nologin "$account"
+fi
+uid=$(id -u "$account")
+gid=$(id -g "$account")
+
+add_subid() {
+  file=$1
+  option=$2
+  if ! awk -F: -v account="$account" '$1 == account { found = 1 } END { exit !found }' "$file"; then
+    start=$(awk -F: 'BEGIN { maximum = 100000 } { finish = $2 + $3; if (finish > maximum) maximum = finish } END { print maximum }' "$file")
+    finish=$((start + 65535))
+    usermod "$option" "$start-$finish" "$account"
+  fi
+}
+add_subid /etc/subuid --add-subuids
+add_subid /etc/subgid --add-subgids
+
+install -d -m 0755 -o root -g root /var/lib/tools-mcp-tenants /etc/tools-mcp/tenants
+install -d -m 0700 -o "$account" -g "$account" "$base" "$runtime" \
+  "$base/gateway" "$base/workspace" "$base/home" "$base/runner"
+install -d -m 0700 -o "$account" -g "$account" "$config" "$config/pki"
+loginctl enable-linger "$account" >/dev/null
+systemctl start "user@$uid.service"
+
+temporary=$(mktemp -d)
+trap 'rm -rf -- "$temporary"' EXIT HUP INT TERM
+
+if [ ! -s "$config/pki/server.key" ]; then
+  openssl req -new -newkey rsa:3072 -nodes -keyout "$temporary/server.key" \
+    -out "$temporary/server.csr" -subj "/CN=localhost" >/dev/null 2>&1
+  printf '%s\n' \
+    'basicConstraints=critical,CA:FALSE' \
+    'keyUsage=critical,digitalSignature,keyEncipherment' \
+    'extendedKeyUsage=serverAuth' \
+    'subjectAltName=DNS:localhost,IP:127.0.0.1' > "$temporary/server.ext"
+  openssl x509 -req -sha256 -days 90 -in "$temporary/server.csr" \
+    -CA "$ca_root/ca.pem" -CAkey "$ca_root/ca.key" -CAcreateserial \
+    -extfile "$temporary/server.ext" -out "$temporary/server.pem" >/dev/null 2>&1
+  install -m 0400 -o "$account" -g "$account" "$temporary/server.key" "$config/pki/server.key"
+  install -m 0444 -o "$account" -g "$account" "$temporary/server.pem" "$config/pki/server.pem"
+fi
+install -m 0444 -o "$account" -g "$account" "$ca_root/ca.pem" "$config/pki/device-ca.pem"
+
+if [ ! -s "$base/runner/device.key" ]; then
+  openssl req -new -newkey rsa:3072 -nodes -keyout "$temporary/device.key" \
+    -out "$temporary/device.csr" -subj "/CN=$tenant-vps-runner" >/dev/null 2>&1
+  printf '%s\n' \
+    'basicConstraints=critical,CA:FALSE' \
+    'keyUsage=critical,digitalSignature' \
+    'extendedKeyUsage=clientAuth' > "$temporary/device.ext"
+  openssl x509 -req -sha256 -days 90 -in "$temporary/device.csr" \
+    -CA "$ca_root/ca.pem" -CAkey "$ca_root/ca.key" -CAcreateserial \
+    -extfile "$temporary/device.ext" -out "$temporary/device.pem" >/dev/null 2>&1
+  install -m 0400 -o "$account" -g "$account" "$temporary/device.key" "$base/runner/device.key"
+  install -m 0444 -o "$account" -g "$account" "$temporary/device.pem" "$base/runner/device.pem"
+fi
+install -m 0444 -o "$account" -g "$account" "$ca_root/ca.pem" "$base/runner/relay-ca.pem"
+
+if [ ! -s "$secret" ]; then
+  umask 077
+  openssl rand -base64 48 > "$secret"
+fi
+chmod 0400 "$secret"
+if [ ! -s "$config/owner-secret.phc" ]; then
+  "$release/bin/tools-mcp-admin" hash-owner-secret "$secret" "$temporary/owner-secret.phc"
+  install -m 0400 -o "$account" -g "$account" "$temporary/owner-secret.phc" "$config/owner-secret.phc"
+fi
+if [ ! -s "$config/token-hash.key" ]; then
+  openssl rand 32 > "$temporary/token-hash.key"
+  install -m 0400 -o "$account" -g "$account" "$temporary/token-hash.key" "$config/token-hash.key"
+fi
+[ "$(wc -c < "$config/token-hash.key")" -eq 32 ] || fail "tenant token hash key is invalid"
+
+if [ ! -s "$config/openai-header-salt" ]; then
+  openssl rand -hex 32 > "$temporary/openai-header-salt"
+  install -m 0400 -o "$account" -g "$account" "$temporary/openai-header-salt" "$config/openai-header-salt"
+fi
+openai_salt=$(cat "$config/openai-header-salt")
+manifest_digest=$(sha256sum "$release/system-skills.sha256" | awk '{print $1}')
+cat > "$config/gateway.env" <<EOF
+TOOLS_MCP_ISSUER=$issuer
+TOOLS_MCP_CLIENT_ID=https://chatgpt.com/oauth/client.json
+TOOLS_MCP_REDIRECT_URI=https://chatgpt.com/connector_platform_oauth_redirect
+TOOLS_MCP_OWNER_HASH_FILE=$config/owner-secret.phc
+TOOLS_MCP_TOKEN_HASH_KEY_FILE=$config/token-hash.key
+TOOLS_MCP_DATABASE=$base/gateway/gateway.sqlite3
+TOOLS_MCP_WATERMARK=$base/gateway/allocator.watermark
+TOOLS_MCP_TLS_CERT=$config/pki/server.pem
+TOOLS_MCP_TLS_KEY=$config/pki/server.key
+TOOLS_MCP_DEVICE_CA=$config/pki/device-ca.pem
+TOOLS_MCP_BIND=127.0.0.1:$gateway_port
+TOOLS_MCP_RELAY_BIND=127.0.0.1:$relay_port
+TOOLS_MCP_OPENAI_HEADER_SALT=$openai_salt
+TOOLS_MCP_SYSTEM_SKILL_MANIFEST_ALLOWLIST=$manifest_digest
+TOOLS_MCP_HOST_METRICS_FILE=$base/metrics.prom
+EOF
+chown "$account:$account" "$config/gateway.env"
+chmod 0600 "$config/gateway.env"
+printf 'tools_mcp_host_probe 1\n' > "$base/metrics.prom"
+chown "$account:$account" "$base/metrics.prom"
+chmod 0600 "$base/metrics.prom"
+
+cat > "$config/workload.env" <<EOF
+HOME=$runtime
+XDG_RUNTIME_DIR=/run/user/$uid
+DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus
+TOOLS_MCP_IMAGE=$image_digest
+TOOLS_MCP_CONTAINER=$container
+TOOLS_MCP_WORKSPACE=$base/workspace
+TOOLS_MCP_PERSISTENT_HOME=$base/home
+TOOLS_MCP_CONTAINER_MEMORY=1024m
+TOOLS_MCP_CONTAINER_MEMORY_BYTES=1073741824
+TOOLS_MCP_CONTAINER_CPUS=0.75
+TOOLS_MCP_CONTAINER_NANO_CPUS=750000000
+TOOLS_MCP_CONTAINER_CPU_MAX='75000 100000'
+TOOLS_MCP_CONTAINER_PIDS=256
+TOOLS_MCP_ALLOW_OWNER_SSH=0
+EOF
+cat > "$config/runner.env" <<EOF
+TOOLS_MCP_RELAY_URL=wss://localhost:$relay_port/relay
+TOOLS_MCP_RELAY_CA=$base/runner/relay-ca.pem
+TOOLS_MCP_DEVICE_CERT=$base/runner/device.pem
+TOOLS_MCP_DEVICE_KEY=$base/runner/device.key
+TOOLS_MCP_DEVICE_ID=$tenant-vps-runner
+TOOLS_MCP_WORKSPACE=$base/workspace
+TOOLS_MCP_PERSISTENT_HOME=$base/home
+TOOLS_MCP_SYSTEM_SKILLS=$release/system-skills
+TOOLS_MCP_SYSTEM_SKILL_MANIFEST=$release/system-skills.sha256
+TOOLS_MCP_PODMAN=/usr/bin/podman
+TOOLS_MCP_CONTAINER_PREFLIGHT=$release/libexec/verify-container
+TOOLS_MCP_CONTAINER_EGRESS=$release/libexec/configure-egress
+TOOLS_MCP_CONTAINER=$container
+EOF
+chown "$account:$account" "$config/workload.env" "$config/runner.env"
+chmod 0600 "$config/workload.env" "$config/runner.env"
+
+tenant_env() {
+  (cd / && runuser -u "$account" -- env \
+    HOME="$runtime" XDG_RUNTIME_DIR="/run/user/$uid" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" "$@")
+}
+if ! tenant_env podman image exists "$image_digest"; then
+  tenant_env podman load --input "$image_archive" >/dev/null
+fi
+tenant_env podman image exists "$image_digest" ||
+  fail "tenant image import did not preserve the admitted digest"
+if ! tenant_env podman container exists "$container"; then
+  tenant_env sh -c 'set -a; . "$1"; set +a; exec "$2"' sh "$config/workload.env" "$release/libexec/create-container"
+fi
+tenant_env podman system migrate
+
+systemctl start "tools-mcp-tenant-gateway@$tenant.service"
+attempt=0
+while [ "$attempt" -lt 30 ]; do
+  systemctl is-active --quiet "tools-mcp-tenant-gateway@$tenant.service" && break
+  attempt=$((attempt + 1))
+  sleep 1
+done
+[ "$attempt" -lt 30 ] || fail "tenant gateway did not initialize"
+expiry=$(( $(date +%s) + 90 * 24 * 60 * 60 ))
+tenant_env sh -c 'set -a; . "$1"; set +a; exec "$2" approve-device "$3" "$4" linux-vps "$5"' \
+  sh "$config/gateway.env" "$release/bin/tools-mcp-admin" "$base/runner/device.pem" "$tenant-vps-runner" "$expiry"
+
+printf 'READY: tenant %s provisioned; secret remains root-only at %s\n' "$tenant" "$secret"

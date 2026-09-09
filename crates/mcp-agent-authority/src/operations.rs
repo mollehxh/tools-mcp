@@ -390,7 +390,7 @@ pub(crate) fn same_directory(left: &Dir, right: &Dir) -> Result<bool, OperationE
     }
     #[cfg(windows)]
     {
-        use cap_std::fs::MetadataExt;
+        use cap_primitives::fs::_WindowsByHandle;
         Ok(left.volume_serial_number().is_some()
             && left.volume_serial_number() == right.volume_serial_number()
             && left.file_index().is_some()

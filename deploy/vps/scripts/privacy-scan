@@ -1,0 +1,62 @@
+#!/bin/sh
+set -eu
+
+fail() { printf 'privacy scan failed: %s\n' "$1" >&2; exit 1; }
+test_root=${TOOLS_MCP_PRIVACY_TEST_ROOT:-}
+if [ -n "$test_root" ]; then
+  [ "${TOOLS_MCP_PRIVACY_TESTING:-}" = 1 ] || fail "test root requires explicit test mode"
+  case "$test_root" in /*) ;; *) fail "test root must be absolute" ;; esac
+else
+  [ "$(id -u)" -eq 0 ] || fail "privacy scan must run as root"
+fi
+
+canaries=${1:?usage: privacy-scan ROOT_ONLY_CANARY_FILE}
+[ -f "$canaries" ] || fail "canary file is missing"
+[ "$(wc -c < "$canaries")" -le 16384 ] || fail "canary file is oversized"
+[ "$(wc -l < "$canaries")" -le 64 ] || fail "too many canaries"
+awk 'length($0) < 16 || length($0) > 256 { exit 1 }' "$canaries" ||
+  fail "every canary must contain 16 to 256 bytes"
+if [ -z "$test_root" ]; then
+  [ "$(stat -c %u "$canaries")" -eq 0 ] || fail "canary file must be root-owned"
+  canary_mode=$(stat -c %a "$canaries")
+  [ "$((0$canary_mode & 077))" -eq 0 ] ||
+    fail "canary file must not be accessible to group or other"
+fi
+
+temporary=$(mktemp -d)
+cleanup() { rm -rf -- "$temporary"; }
+trap cleanup EXIT HUP INT TERM
+journal=$temporary/journal.log
+if [ -n "$test_root" ]; then
+  cp "${TOOLS_MCP_PRIVACY_JOURNAL_FILE:?test journal is required}" "$journal"
+else
+  journalctl --no-pager --output=cat \
+    -u tools-mcp-gateway.service -u tools-mcp-runner.service \
+    -u tools-mcp-container.service -u tools-mcp-shared-router.service \
+    -u tools-mcp-ngrok.service -u tools-mcp-relay-edge.service > "$journal"
+  if command -v coredumpctl >/dev/null 2>&1 && \
+    coredumpctl --no-pager --no-legend list 2>/dev/null |
+      grep -Eq 'mcp-agent|tools-mcp|haproxy|ngrok'; then
+    fail "a project process produced a core-dump record"
+  fi
+fi
+
+scan_file() {
+  category=$1
+  file=$2
+  [ ! -e "$file" ] || ! grep -a -q -F -f "$canaries" "$file" ||
+    fail "$category contains a seeded private value"
+}
+
+scan_tree() {
+  category=$1
+  tree=$2
+  [ ! -d "$tree" ] || ! grep -R -a -q -F -f "$canaries" "$tree" ||
+    fail "$category contains a seeded private value"
+}
+
+scan_file journald "$journal"
+scan_file metrics "$test_root/var/lib/tools-mcp/metrics/host.prom"
+scan_tree gateway-state "$test_root/var/lib/tools-mcp/gateway"
+scan_tree recovery-sets "$test_root/var/lib/tools-mcp/backups"
+printf 'privacy scan passed: no seeded values in logs, metrics, state, backups, or crashes\n'

@@ -1,0 +1,33 @@
+[Unit]
+Description=tools-mcp persistent VPS fallback runner
+After=network-online.target tools-mcp-container.service tools-mcp-gateway.service
+Requires=tools-mcp-container.service
+Wants=tools-mcp-public-activation.service
+
+[Service]
+Type=simple
+User=tools-mcp-workload
+Group=tools-mcp-workload
+EnvironmentFile=/etc/tools-mcp/runner.env
+EnvironmentFile=/etc/tools-mcp/workload.env
+ExecStartPre=/opt/tools-mcp/current/libexec/verify-container
+ExecStart=/opt/tools-mcp/current/bin/mcp-agent-vps-runner
+Restart=always
+RestartSec=2s
+TimeoutStopSec=30s
+LimitCORE=0
+KillMode=control-group
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=no
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+RestrictSUIDSGID=yes
+ReadWritePaths=/var/lib/tools-mcp/workspace /var/lib/tools-mcp/home /var/lib/tools-mcp/runner /var/lib/tools-mcp/workload
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -20,12 +20,71 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --all-targets --all-features
       - run: cargo run -p xtask -- conformance
-      - run: cargo run -p xtask -- package
+      - run: cargo run -p xtask -- hybrid-smoke
+      - run: node --test npm/tools-mcp/test/cli.test.js
+      - run: cargo run -p xtask -- npm-package
+      - run: node npm/tools-mcp/test/package-smoke.js
       - run: cargo run -p xtask -- inspector-smoke
       - run: cargo tree -d
 
-  unsupported-platforms:
-    name: Linux and Windows deferred
+  windows:
+    name: Windows native worker
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: source with spaces ü
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: source with spaces ü
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: clippy,rustfmt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Build pinned native helper
+        shell: pwsh
+        run: |
+          cargo build --locked --release -p mcp-agent-windows-sandbox
+          $helper = (Resolve-Path target/release/mcp-agent-windows-sandbox.exe).Path
+          $digest = (Get-FileHash -Algorithm SHA256 $helper).Hash.ToLowerInvariant()
+          "MCP_AGENT_WINDOWS_SANDBOX_HELPER_PATH=$helper" >> $env:GITHUB_ENV
+          "MCP_AGENT_WINDOWS_SANDBOX_HELPER_SHA256=$digest" >> $env:GITHUB_ENV
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --all-targets --all-features
+      - run: cargo run -p xtask -- conformance
+      - run: cargo run -p xtask -- hybrid-smoke
+      - run: node --test npm/tools-mcp/test/cli.test.js
+      - run: cargo run -p xtask -- npm-package
+      - run: node npm/tools-mcp/test/package-smoke.js
+
+  linux-gateway:
+    name: Linux gateway and relay
     runs-on: ubuntu-latest
     steps:
-      - run: echo "Linux and Windows native release support is intentionally deferred; no artifact is claimed."
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: clippy,rustfmt
+      - run: cargo clippy -p mcp-agent-gateway -p mcp-agent-relay --all-targets --all-features -- -D warnings
+      - run: cargo test -p mcp-agent-gateway -p mcp-agent-relay --all-targets --all-features
+      - run: cargo run -p xtask -- oauth-conformance
+      - run: cargo run -p xtask -- hybrid-smoke
+      - run: cargo run -p xtask -- vps-package
+      - name: Verify matched and stale recovery transactions
+        run: deploy/vps/tests/recovery-fixture
+      - name: Verify privacy scan fail-closed cases
+        run: deploy/vps/tests/privacy-fixture
+      - name: Verify byte and inode failure isolation
+        run: sudo deploy/vps/tests/storage-fixture
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tools-mcp-vps-ci
+          path: |
+            target/release-artifacts/tools-mcp-vps-*.tar.gz
+            target/release-artifacts/tools-mcp-vps-*.tar.gz.sha256
+          if-no-files-found: error

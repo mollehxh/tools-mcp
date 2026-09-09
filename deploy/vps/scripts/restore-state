@@ -1,0 +1,183 @@
+#!/bin/sh
+set -eu
+
+fail() { printf 'STOP: %s\n' "$*" >&2; exit 1; }
+test_root=${TOOLS_MCP_RECOVERY_TEST_ROOT:-}
+if [ -n "$test_root" ]; then
+  [ "${TOOLS_MCP_RECOVERY_TESTING:-}" = 1 ] || fail "test root requires TOOLS_MCP_RECOVERY_TESTING=1"
+  case "$test_root" in /*) ;; *) fail "test root must be absolute" ;; esac
+  [ -d "$test_root" ] || fail "test root does not exist"
+else
+  [ "$(id -u)" -eq 0 ] || fail "restore must run as root"
+fi
+[ "$#" -eq 2 ] || fail "usage: restore-state <matched|stale> <recovery-set-directory>"
+mode=$1
+requested=$2
+case "$mode" in
+  matched|stale) ;;
+  *) fail "restore mode must be matched or stale" ;;
+esac
+
+state=$test_root/var/lib/tools-mcp/gateway
+backup_root=$test_root/var/lib/tools-mcp/backups
+config=$test_root/etc/tools-mcp
+runner=$test_root/var/lib/tools-mcp/runner
+issuer=$test_root/root/.tools-mcp-ca
+gateway_owner=${TOOLS_MCP_RECOVERY_GATEWAY_OWNER:-tools-mcp-gateway}
+gateway_group=${TOOLS_MCP_RECOVERY_GATEWAY_GROUP:-tools-mcp-gateway}
+workload_owner=${TOOLS_MCP_RECOVERY_WORKLOAD_OWNER:-tools-mcp-workload}
+workload_group=${TOOLS_MCP_RECOVERY_WORKLOAD_GROUP:-tools-mcp-workload}
+edge_group=${TOOLS_MCP_RECOVERY_EDGE_GROUP:-tools-mcp-edge}
+router_group=${TOOLS_MCP_RECOVERY_ROUTER_GROUP:-haproxy}
+copy_state() {
+  if cp --preserve=mode,ownership,timestamps "$1" "$2" 2>/dev/null; then
+    return
+  fi
+  cp -p "$1" "$2"
+}
+for service in tools-mcp-gateway.service tools-mcp-runner.service; do
+  systemctl is-active --quiet "$service" && fail "$service must be stopped before restore"
+done
+
+source_dir=$(realpath "$requested")
+backup_root_canonical=$(realpath "$backup_root")
+case "$source_dir/" in
+  "$backup_root_canonical"/*/) ;;
+  *) fail "recovery set must be an existing child of $backup_root" ;;
+esac
+[ -d "$source_dir" ] || fail "recovery set is not a directory"
+[ -z "$(find "$source_dir" -type l -print -quit)" ] || fail "recovery set contains a symlink"
+(
+  cd "$source_dir"
+  sha256sum -c SHA256SUMS
+) >/dev/null || fail "recovery-set checksum verification failed"
+
+for required in gateway.sqlite3 allocator.watermark SECURITY_REVISION owner-secret.phc \
+  token-hash.key token-hash.key-id device-ca.key-id server.key server.pem device-ca.pem ca.key ca.pem \
+  gateway.env runner.env workload.env ngrok.env ngrok.yml metrics.env shared-router.cfg.in; do
+  [ -f "$source_dir/$required" ] || fail "recovery set is missing $required"
+done
+[ "$(wc -c < "$source_dir/token-hash.key")" -eq 32 ] || fail "token hash key is malformed"
+grep -q '^\$argon2' "$source_dir/owner-secret.phc" || fail "owner-secret hash is malformed"
+expected_token_key_id=$(sed -n 's/^sha256://p' "$source_dir/token-hash.key-id")
+actual_token_key_id=$(sha256sum "$source_dir/token-hash.key" | awk '{print $1}')
+[ "$actual_token_key_id" = "$expected_token_key_id" ] || fail "token hash key ID mismatch"
+expected_ca_key_id=$(sed -n 's/^sha256://p' "$source_dir/device-ca.key-id")
+actual_ca_key_id=$(openssl x509 -in "$source_dir/ca.pem" -outform DER | sha256sum | awk '{print $1}')
+gateway_ca_key_id=$(openssl x509 -in "$source_dir/device-ca.pem" -outform DER | sha256sum | awk '{print $1}')
+[ "$actual_ca_key_id" = "$expected_ca_key_id" ] || fail "device CA key ID mismatch"
+[ "$gateway_ca_key_id" = "$expected_ca_key_id" ] || fail "gateway device CA does not match issuer"
+sqlite3 "$source_dir/gateway.sqlite3" 'PRAGMA integrity_check;' | grep -qx ok ||
+  fail "recovery database failed integrity_check"
+backup_revision=$(sed -n '1p' "$source_dir/SECURITY_REVISION")
+case "$backup_revision" in
+  ''|*[!0-9]*) fail "security revision is malformed" ;;
+esac
+database_revision=$(sqlite3 "$source_dir/gateway.sqlite3" \
+  'SELECT revision FROM security_revision WHERE singleton = 1;')
+[ "$database_revision" = "$backup_revision" ] ||
+  fail "security revision does not match the recovery database"
+
+preserved_watermark=
+if [ -f "$state/gateway.sqlite3" ]; then
+  current_revision=$(sqlite3 "$state/gateway.sqlite3" \
+    'SELECT revision FROM security_revision WHERE singleton = 1;' 2>/dev/null) ||
+    fail "current security revision cannot be read"
+  case "$current_revision" in
+    ''|*[!0-9]*) fail "current security revision is malformed" ;;
+  esac
+  if [ "$mode" = matched ]; then
+    [ "$current_revision" = "$backup_revision" ] ||
+      fail "later security writes exist; use stale restore"
+    cmp -s "$state/allocator.watermark" "$source_dir/allocator.watermark" ||
+      fail "allocator advanced after this snapshot; use stale restore"
+  else
+    [ -f "$state/allocator.watermark" ] ||
+      fail "stale restore requires the rollback-excluded current allocator watermark"
+    preserved_watermark=$(mktemp "$test_root/var/lib/tools-mcp/allocator.watermark.XXXXXX")
+    copy_state "$state/allocator.watermark" "$preserved_watermark"
+  fi
+elif [ "$mode" = stale ]; then
+  fail "stale restore without the rollback-excluded allocator watermark is unsupported"
+fi
+
+staging=$(mktemp -d "$test_root/var/lib/tools-mcp/restore.XXXXXX")
+cleanup() {
+  rm -rf -- "$staging"
+  [ -z "$preserved_watermark" ] || rm -f -- "$preserved_watermark"
+}
+trap cleanup EXIT HUP INT TERM
+install -m 0600 -o "$gateway_owner" -g "$gateway_group" \
+  "$source_dir/gateway.sqlite3" "$staging/gateway.sqlite3"
+if [ "$mode" = matched ]; then
+  install -m 0600 -o "$gateway_owner" -g "$gateway_group" \
+    "$source_dir/allocator.watermark" "$staging/allocator.watermark"
+else
+  install -m 0600 -o "$gateway_owner" -g "$gateway_group" \
+    "$preserved_watermark" "$staging/allocator.watermark"
+fi
+
+install -m 0400 -o "$gateway_owner" -g "$gateway_group" \
+  "$source_dir/owner-secret.phc" "$config/owner-secret.phc"
+install -m 0400 -o "$gateway_owner" -g "$gateway_group" \
+  "$source_dir/token-hash.key" "$config/token-hash.key"
+install -m 0440 -o "$(id -un)" -g "$gateway_group" \
+  "$source_dir/token-hash.key-id" "$config/token-hash.key-id"
+install -m 0440 -o "$(id -un)" -g "$gateway_group" \
+  "$source_dir/device-ca.key-id" "$config/device-ca.key-id"
+install -m 0640 -o "$(id -un)" -g "$gateway_group" \
+  "$source_dir/gateway.env" "$config/gateway.env"
+for file in runner.env workload.env; do
+  install -m 0640 -o "$(id -un)" -g "$workload_group" \
+    "$source_dir/$file" "$config/$file"
+done
+for file in ngrok.env ngrok.yml; do
+  install -m 0640 -o "$(id -un)" -g "$edge_group" \
+    "$source_dir/$file" "$config/$file"
+done
+install -m 0640 -o "$(id -un)" -g "$gateway_group" \
+  "$source_dir/metrics.env" "$config/metrics.env"
+install -m 0640 -o "$(id -un)" -g "$router_group" \
+  "$source_dir/shared-router.cfg.in" "$config/shared-router.cfg.in"
+install -m 0400 -o "$gateway_owner" -g "$gateway_group" \
+  "$source_dir/server.key" "$config/pki/gateway/server.key"
+install -m 0444 -o "$gateway_owner" -g "$gateway_group" \
+  "$source_dir/server.pem" "$config/pki/gateway/server.pem"
+install -m 0444 -o "$gateway_owner" -g "$gateway_group" \
+  "$source_dir/device-ca.pem" "$config/pki/gateway/device-ca.pem"
+install -m 0400 -o "$(id -un)" -g "$(id -gn)" "$source_dir/ca.key" "$issuer/ca.key"
+install -m 0444 -o "$(id -un)" -g "$(id -gn)" "$source_dir/ca.pem" "$issuer/ca.pem"
+
+mv -f "$staging/gateway.sqlite3" "$state/gateway.sqlite3"
+mv -f "$staging/allocator.watermark" "$state/allocator.watermark"
+rm -f -- "$state/gateway.sqlite3-wal" "$state/gateway.sqlite3-shm"
+
+if [ "$mode" = matched ]; then
+  for file in device.key device.pem relay-ca.pem; do
+    [ ! -f "$source_dir/$file" ] || install -m 0400 -o "$workload_owner" \
+      -g "$workload_group" "$source_dir/$file" "$runner/$file"
+  done
+else
+  sqlite3 "$state/gateway.sqlite3" <<'SQL'
+BEGIN IMMEDIATE;
+DELETE FROM oauth_access;
+DELETE FROM oauth_code;
+DELETE FROM oauth_refresh;
+DELETE FROM oauth_revoked_family;
+UPDATE oauth_grant SET revoked_unix = unixepoch() WHERE revoked_unix IS NULL;
+UPDATE relay_device SET revoked_unix = unixepoch() WHERE revoked_unix IS NULL;
+DELETE FROM relay_pending_enrollment;
+COMMIT;
+SQL
+  rm -f -- "$runner/device.key" "$runner/device.pem"
+fi
+
+sqlite3 "$state/gateway.sqlite3" 'PRAGMA integrity_check;' | grep -qx ok ||
+  fail "restored database failed integrity_check"
+if [ "$mode" = stale ]; then
+  [ "$(sqlite3 "$state/gateway.sqlite3" 'SELECT COUNT(*) FROM oauth_grant WHERE revoked_unix IS NULL;')" -eq 0 ] ||
+    fail "stale restore left an active OAuth grant"
+  [ "$(sqlite3 "$state/gateway.sqlite3" 'SELECT COUNT(*) FROM relay_device WHERE revoked_unix IS NULL;')" -eq 0 ] ||
+    fail "stale restore left an active device"
+fi
+printf 'restore validated; services remain stopped for explicit operator activation\n'

@@ -1,0 +1,17 @@
+[Unit]
+Description=Proxy public relay TCP to the private gateway listener
+Requires=tools-mcp-relay-edge.socket
+After=tools-mcp-relay-edge.socket
+
+[Service]
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:8445
+LimitCORE=0
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+RestrictSUIDSGID=yes

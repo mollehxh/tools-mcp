@@ -19,7 +19,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: cargo run -p xtask -- package
+      - run: cargo run -p xtask -- conformance
+      - run: cargo run -p xtask -- hybrid-smoke
+      - run: node --test npm/tools-mcp/test/cli.test.js
+      - run: cargo run -p xtask -- npm-package
+      - run: node npm/tools-mcp/test/package-smoke.js
       - run: cargo run -p xtask -- inspector-smoke
       - uses: actions/upload-artifact@v4
         with:
@@ -27,4 +31,60 @@ jobs:
           path: |
             target/release-artifacts/*.tar.gz
             target/release-artifacts/*.tar.gz.sha256
+            target/npm-artifacts/*.tgz
+          if-no-files-found: error
+
+  windows-package:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Build and pin native helper
+        shell: pwsh
+        run: |
+          cargo build --locked --release -p mcp-agent-windows-sandbox
+          $helper = (Resolve-Path target/release/mcp-agent-windows-sandbox.exe).Path
+          $digest = (Get-FileHash -Algorithm SHA256 $helper).Hash.ToLowerInvariant()
+          "MCP_AGENT_WINDOWS_SANDBOX_HELPER_PATH=$helper" >> $env:GITHUB_ENV
+          "MCP_AGENT_WINDOWS_SANDBOX_HELPER_SHA256=$digest" >> $env:GITHUB_ENV
+      - run: cargo test -p mcp-agent-windows-sandbox
+      - run: cargo run -p xtask -- conformance
+      - run: cargo run -p xtask -- hybrid-smoke
+      - run: node --test npm/tools-mcp/test/cli.test.js
+      - run: cargo run -p xtask -- npm-package
+      - run: node npm/tools-mcp/test/package-smoke.js
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcp-agent-windows
+          path: |
+            target/release-artifacts/*.tar.gz
+            target/release-artifacts/*.tar.gz.sha256
+            target/npm-artifacts/*.tgz
+          if-no-files-found: error
+
+  linux-vps-package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+      - run: cargo run -p xtask -- oauth-conformance
+      - run: cargo run -p xtask -- hybrid-smoke
+      - run: cargo run -p xtask -- vps-package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tools-mcp-vps-linux
+          path: |
+            target/release-artifacts/tools-mcp-vps-*.tar.gz
+            target/release-artifacts/tools-mcp-vps-*.tar.gz.sha256
           if-no-files-found: error

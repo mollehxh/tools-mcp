@@ -5,6 +5,7 @@ use codex_tools_runtime::process::{OwnerId, ProcessManager};
 use mcp_agent_authority::release::{verify_release, verify_release_assets};
 use mcp_agent_authority::sandbox::{PreflightReceipt, Sandbox};
 use mcp_agent_authority::{CapabilitySnapshot, WorkspaceAuthority};
+use mcp_agent_local_backend::LocalBackend;
 use mcp_agent_server::ApplicationContext;
 use mcp_agent_server::http::{HttpConfig, MCP_ENDPOINT, router};
 use skill_store::SkillCatalog;
@@ -55,14 +56,30 @@ pub async fn run(cli: Cli) -> Result<()> {
 
     let processes = Arc::new(ProcessManager::new(Arc::new(sandbox)));
     let catalog = Arc::new(SkillCatalog::new(&authority).context("skill catalog setup failed")?);
-    let context = Arc::new(ApplicationContext::new(
+    let backend = Arc::new(LocalBackend::new(
         authority.clone(),
         Arc::clone(&processes),
         catalog,
         OwnerId::from("local-anonymous"),
     ));
+    let context = Arc::new(ApplicationContext::new(Arc::clone(&backend)));
 
     let cancellation = CancellationToken::new();
+    if let Some(relay) = cli.relay.clone() {
+        let signal_token = cancellation.clone();
+        tokio::spawn(async move {
+            let _ = crate::shutdown::cancel_on_signal(signal_token).await;
+        });
+        return crate::local_relay::run(
+            backend,
+            processes,
+            &workspace,
+            &release,
+            relay,
+            cancellation,
+        )
+        .await;
+    }
     let mut http = HttpConfig::default();
     http.allowed_hosts.extend(cli.public_hosts.iter().cloned());
     http.allowed_hosts.push(cli.bind.to_string());

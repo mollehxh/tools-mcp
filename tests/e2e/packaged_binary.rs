@@ -1,10 +1,15 @@
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use mcp_agent_authority::release::{
     RELEASE_MANIFEST_FILE, ReleaseArtifactKind, ReleaseError, ReleaseManifest,
     current_release_target, verify_release, verify_release_assets,
 };
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::fs;
-use xtask::package::{PackageOptions, assemble, ensure_supported_os};
+use xtask::package::ensure_supported_os;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use xtask::package::{PackageOptions, assemble};
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const INSTALLER_FILES: &[&str] = &[
     "SKILL.md",
     "LICENSE.txt",
@@ -15,7 +20,13 @@ const INSTALLER_FILES: &[&str] = &[
     "scripts/install-skill-from-github.py",
 ];
 
-fn fixture() -> (tempfile::TempDir, tempfile::TempDir, std::path::PathBuf) {
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn fixture() -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
     let repository = tempfile::tempdir().unwrap();
     let output = tempfile::tempdir().unwrap();
     let source_repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -43,17 +54,22 @@ fn fixture() -> (tempfile::TempDir, tempfile::TempDir, std::path::PathBuf) {
     }
     let binary = repository.path().join("mcp-agent");
     fs::write(&binary, b"fixture executable").unwrap();
-    (repository, output, binary)
+    let key_helper = repository.path().join("tools-mcp-keygen");
+    fs::write(&key_helper, b"fixture key helper").unwrap();
+    (repository, output, binary, key_helper)
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn options(
     repository: &tempfile::TempDir,
     output: &tempfile::TempDir,
     binary: std::path::PathBuf,
+    key_helper: std::path::PathBuf,
 ) -> PackageOptions {
     PackageOptions {
         repository_root: repository.path().to_path_buf(),
         binary_path: binary,
+        device_key_helper_path: key_helper,
         output_root: output.path().join("output with spaces"),
         source_commit: "0123456789abcdef".to_owned(),
         source_tree_state: "dirty".to_owned(),
@@ -63,19 +79,19 @@ fn options(
 }
 
 #[test]
-fn package_is_macos_only_until_native_backends_are_delivered() {
+fn package_supports_native_macos_and_windows_but_not_linux_local() {
     ensure_supported_os("macos").unwrap();
-    for unsupported in ["linux", "windows"] {
-        let error = ensure_supported_os(unsupported).unwrap_err();
-        assert!(error.to_string().contains("macOS-only"));
-        assert!(error.to_string().contains("deferred"));
-    }
+    ensure_supported_os("windows").unwrap();
+    let error = ensure_supported_os("linux").unwrap_err();
+    assert!(error.to_string().contains("macOS and Windows"));
 }
 
 #[test]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[allow(clippy::too_many_lines)] // The package inventory is clearest as one end-to-end assertion.
 fn assembles_an_idempotent_release_with_manifest_notices_and_checksums() {
-    let (repository, output, binary) = fixture();
-    let options = options(&repository, &output, binary);
+    let (repository, output, binary, key_helper) = fixture();
+    let options = options(&repository, &output, binary, key_helper);
 
     let first = assemble(&options).unwrap();
     let first_archive = fs::read(&first.archive).unwrap();
@@ -88,12 +104,35 @@ fn assembles_an_idempotent_release_with_manifest_notices_and_checksums() {
         first_manifest,
         fs::read(second.release_dir.join(RELEASE_MANIFEST_FILE)).unwrap()
     );
-    assert!(first.release_dir.join("mcp-agent").is_file());
+    assert!(
+        first
+            .release_dir
+            .join(if cfg!(windows) {
+                "mcp-agent.exe"
+            } else {
+                "mcp-agent"
+            })
+            .is_file()
+    );
     assert!(first.release_dir.join("sandbox-manifest.json").is_file());
     assert!(
         first
             .release_dir
-            .join("sandbox/macos-seatbelt.marker")
+            .join(if cfg!(windows) {
+                "tools-mcp-keygen.exe"
+            } else {
+                "tools-mcp-keygen"
+            })
+            .is_file()
+    );
+    assert!(
+        first
+            .release_dir
+            .join(if cfg!(windows) {
+                "sandbox/mcp-agent-windows-sandbox.exe"
+            } else {
+                "sandbox/macos-seatbelt.marker"
+            })
             .is_file()
     );
     assert!(first.release_dir.join("sandbox/preflight-canary").is_file());
@@ -119,20 +158,24 @@ fn assembles_an_idempotent_release_with_manifest_notices_and_checksums() {
 
     let manifest = verify_release(
         &first.release_dir,
-        &first.release_dir.join("mcp-agent"),
+        &first.release_dir.join(if cfg!(windows) {
+            "mcp-agent.exe"
+        } else {
+            "mcp-agent"
+        }),
         "0.1.0",
     )
     .unwrap();
     assert_eq!(manifest.target, current_release_target().unwrap());
     assert_eq!(manifest.source_commit, "0123456789abcdef");
     assert_eq!(manifest.source_tree_state, "dirty");
-    assert_eq!(manifest.supported_os, ["macos"]);
-    assert!(
-        manifest
-            .artifacts
-            .iter()
-            .any(|artifact| artifact.path == "mcp-agent")
-    );
+    assert_eq!(manifest.supported_os, [std::env::consts::OS]);
+    assert!(manifest.artifacts.iter().any(|artifact| artifact.path
+        == if cfg!(windows) {
+            "mcp-agent.exe"
+        } else {
+            "mcp-agent"
+        }));
     assert!(manifest.artifacts.iter().any(|artifact| {
         artifact.path == "system-skills/skill-installer/scripts/install-skill-from-github.py"
             && artifact.mode == 0o755
@@ -145,7 +188,11 @@ fn assembles_an_idempotent_release_with_manifest_notices_and_checksums() {
     }));
 
     let sums = fs::read_to_string(first.release_dir.join("SHA256SUMS")).unwrap();
-    assert!(sums.contains("  mcp-agent\n"));
+    assert!(sums.contains(if cfg!(windows) {
+        "  mcp-agent.exe\n"
+    } else {
+        "  mcp-agent\n"
+    }));
     assert!(sums.contains("  release-manifest.json\n"));
     assert!(sums.contains("  sandbox/preflight-canary\n"));
     assert!(
@@ -154,9 +201,10 @@ fn assembles_an_idempotent_release_with_manifest_notices_and_checksums() {
 }
 
 #[test]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn configured_release_assets_receive_full_verification_and_revalidation() {
-    let (repository, output, binary) = fixture();
-    let result = assemble(&options(&repository, &output, binary)).unwrap();
+    let (repository, output, binary, key_helper) = fixture();
+    let result = assemble(&options(&repository, &output, binary, key_helper)).unwrap();
 
     verify_release_assets(&result.release_dir, "0.1.0").unwrap();
     fs::write(
@@ -173,9 +221,10 @@ fn configured_release_assets_receive_full_verification_and_revalidation() {
 }
 
 #[test]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn release_verification_rejects_extra_missing_modified_and_mode_changed_nested_assets() {
-    let (repository, output, binary) = fixture();
-    let options = options(&repository, &output, binary);
+    let (repository, output, binary, key_helper) = fixture();
+    let options = options(&repository, &output, binary, key_helper);
 
     let result = assemble(&options).unwrap();
     fs::write(
@@ -230,10 +279,15 @@ fn release_verification_rejects_extra_missing_modified_and_mode_changed_nested_a
 }
 
 #[test]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn release_verification_rejects_a_swapped_binary() {
-    let (repository, output, binary) = fixture();
-    let result = assemble(&options(&repository, &output, binary)).unwrap();
-    let installed_binary = result.release_dir.join("mcp-agent");
+    let (repository, output, binary, key_helper) = fixture();
+    let result = assemble(&options(&repository, &output, binary, key_helper)).unwrap();
+    let installed_binary = result.release_dir.join(if cfg!(windows) {
+        "mcp-agent.exe"
+    } else {
+        "mcp-agent"
+    });
     fs::write(&installed_binary, b"replacement").unwrap();
 
     assert!(matches!(
@@ -243,9 +297,10 @@ fn release_verification_rejects_a_swapped_binary() {
 }
 
 #[test]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn release_verification_rejects_a_tampered_artifact_kind() {
-    let (repository, output, binary) = fixture();
-    let result = assemble(&options(&repository, &output, binary)).unwrap();
+    let (repository, output, binary, key_helper) = fixture();
+    let result = assemble(&options(&repository, &output, binary, key_helper)).unwrap();
     let manifest_path = result.release_dir.join(RELEASE_MANIFEST_FILE);
     let mut manifest: ReleaseManifest =
         serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
@@ -259,7 +314,11 @@ fn release_verification_rejects_a_tampered_artifact_kind() {
     assert!(matches!(
         verify_release(
             &result.release_dir,
-            &result.release_dir.join("mcp-agent"),
+            &result.release_dir.join(if cfg!(windows) {
+                "mcp-agent.exe"
+            } else {
+                "mcp-agent"
+            }),
             "0.1.0"
         ),
         Err(ReleaseError::ArtifactMismatch)

@@ -15,3 +15,6 @@ pub const MAX_YIELD_TIME_MS: u64 = 30_000;
 pub const DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS: u64 = 300_000;
 pub const DEFAULT_MAX_OUTPUT_TOKENS: usize = 10_000;
 pub const MAX_UNIFIED_EXEC_PROCESSES: usize = 64;
+mod launcher;
+#[cfg(target_os = "linux")]
+pub use launcher::PodmanLaunchConfig;

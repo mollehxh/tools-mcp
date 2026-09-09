@@ -1,0 +1,110 @@
+#!/bin/sh
+set -eu
+
+fail() { printf 'STOP: %s\n' "$*" >&2; exit 1; }
+test_root=${TOOLS_MCP_CHECKPOINT_TEST_ROOT:-}
+if [ -n "$test_root" ]; then
+  [ "${TOOLS_MCP_CHECKPOINT_TESTING:-}" = 1 ] || fail "test root requires TOOLS_MCP_CHECKPOINT_TESTING=1"
+  case "$test_root" in /*) ;; *) fail "test root must be absolute" ;; esac
+  [ -d "$test_root" ] || fail "test root does not exist"
+else
+  [ "$(id -u)" -eq 0 ] || fail "operator checkpoint must run as root"
+fi
+
+[ "$#" -eq 2 ] || fail "usage: record-operator-checkpoint <5m|1h|24h|7d> FIVE_TOOL_EVIDENCE"
+stage=$1
+evidence=$2
+case "$stage" in 5m|1h|24h|7d) ;; *) fail "checkpoint must be 5m, 1h, 24h, or 7d" ;; esac
+case "$evidence" in /*) ;; *) fail "five-tool evidence path must be absolute" ;; esac
+[ -f "$evidence" ] && [ ! -L "$evidence" ] || fail "five-tool evidence must be a regular non-symlink file"
+grep -qx 'result=pass' "$evidence" || fail "five-tool evidence does not record result=pass"
+
+root=$test_root/var/lib/tools-mcp/checkpoints
+destination=$root/$stage
+[ ! -e "$destination" ] || fail "checkpoint $stage already exists"
+mkdir -p "$root"
+staging=$(mktemp -d "$root/.$stage.partial.XXXXXX")
+cleanup() { rm -rf -- "$staging"; }
+trap cleanup EXIT HUP INT TERM
+
+metrics=$staging/metrics.prom
+if [ -n "${TOOLS_MCP_CHECKPOINT_METRICS_FILE:-}" ]; then
+  cp "$TOOLS_MCP_CHECKPOINT_METRICS_FILE" "$metrics"
+else
+  curl --fail --silent --show-error --max-time 15 \
+    --cacert /etc/tools-mcp/pki/gateway/device-ca.pem \
+    https://127.0.0.1:8443/metrics > "$metrics" || fail "combined metrics endpoint is unavailable"
+fi
+[ "$(wc -c < "$metrics")" -le 131072 ] || fail "metrics snapshot is oversized"
+
+metric() {
+  name=$1
+  value=$(awk -v name="$name" '$1 == name { print $2; found = 1 } END { if (!found) exit 1 }' "$metrics") ||
+    fail "required metric is missing: $name"
+  case "$value" in ''|*[!0-9]*) fail "metric is not an unsigned integer: $name" ;; esac
+  printf '%s' "$value"
+}
+require_one() {
+  name=$1
+  [ "$(metric "$name")" -eq 1 ] || fail "rollback signal: $name is not 1"
+}
+require_zero() {
+  name=$1
+  [ "$(metric "$name")" -eq 0 ] || fail "rollback signal: $name is not 0"
+}
+
+for name in \
+  tools_mcp_gateway_ready \
+  'tools_mcp_backend_eligible{backend="vps"}' \
+  'tools_mcp_backend_compatible{backend="vps"}' \
+  tools_mcp_sqlite_integrity_ok \
+  tools_mcp_shared_route_matrix_ok \
+  tools_mcp_yandex_mail_route_probe_ok \
+  tools_mcp_external_ssh_probe_ok \
+  tools_mcp_external_vpn_probe_ok \
+  tools_mcp_docker_baseline_match \
+  tools_mcp_amnezia_baseline_match \
+  tools_mcp_collector_ok
+do
+  require_one "$name"
+done
+require_zero tools_mcp_relay_queue_drops_total
+require_zero tools_mcp_observability_events_dropped_total
+[ "$(metric tools_mcp_gateway_http_p95_ms)" -le 100 ] ||
+  fail "rollback signal: gateway HTTP p95 exceeds 100 ms"
+[ "$(metric tools_mcp_tls_certificate_lifetime_seconds)" -ge 604800 ] ||
+  fail "deployment no-go: TLS certificate expires in less than seven days"
+
+cp "$evidence" "$staging/five-tool-smoke.txt"
+date -u +%Y-%m-%dT%H:%M:%SZ > "$staging/recorded-at.txt"
+printf '%s\n' "$stage" > "$staging/stage.txt"
+
+if [ -z "$test_root" ]; then
+  readlink -f /opt/tools-mcp/current > "$staging/release.txt"
+  sha256sum /opt/tools-mcp/current/SHA256SUMS > "$staging/release-manifest.sha256"
+  find /etc/tools-mcp -xdev -type f -print0 | sort -z | xargs -0 sha256sum > "$staging/config.sha256"
+  systemctl is-active tools-mcp-gateway tools-mcp-runner tools-mcp-container \
+    tools-mcp-shared-router tools-mcp-ngrok > "$staging/services.txt"
+  ss -H -lntp > "$staging/listeners.txt"
+  uid=$(id -u tools-mcp-workload)
+  runuser -u tools-mcp-workload -- env HOME=/var/lib/tools-mcp/workload \
+    XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+    podman inspect tools-mcp-workspace --format '{{.Image}} {{.ImageName}}' > "$staging/workload-image.txt"
+  for route in /mcp /.well-known/oauth-protected-resource/mcp /yandex-mail/mcp \
+    /.well-known/oauth-protected-resource/yandex-mail/mcp /not-a-route /yandex-mail/mcp/extra
+  do
+    code=$(curl --silent --show-error --max-time 10 --output /dev/null --write-out '%{http_code}' \
+      "https://fidela-unsubversive-imaginarily.ngrok-free.dev$route" || printf 000)
+    printf '%s %s\n' "$route" "$code" >> "$staging/routes.txt"
+  done
+else
+  printf 'test-release\n' > "$staging/release.txt"
+  printf 'test-config\n' > "$staging/config.sha256"
+  printf 'test-image\n' > "$staging/workload-image.txt"
+fi
+
+(cd "$staging" && find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum) > "$staging/SHA256SUMS"
+chmod -R go-rwx "$staging"
+mv "$staging" "$destination"
+trap - EXIT HUP INT TERM
+printf 'recorded operator checkpoint %s at %s\n' "$stage" "$destination"

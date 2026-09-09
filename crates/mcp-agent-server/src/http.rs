@@ -1,3 +1,4 @@
+use crate::context::TRUSTED_CALL_IDENTITY;
 use crate::{AgentHandler, ApplicationContext};
 use axum::Router;
 use axum::body::Body;
@@ -7,15 +8,23 @@ use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE, ORIGIN};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::Response;
 use futures_util::StreamExt;
+use mcp_agent_tool_contracts::CallIdentity;
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
+use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 pub const MCP_ENDPOINT: &str = "/mcp";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthenticatedPrincipal {
+    pub principal_fingerprint: String,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HttpConfig {
@@ -28,6 +37,8 @@ pub struct HttpConfig {
     pub max_sse_responses: usize,
     pub upload_idle_timeout: Duration,
     pub response_idle_timeout: Duration,
+    /// Secret salt used only on a loopback listener behind the trusted ngrok ingress.
+    pub trusted_openai_header_salt: Option<Vec<u8>>,
 }
 
 impl Default for HttpConfig {
@@ -41,7 +52,9 @@ impl Default for HttpConfig {
             max_in_flight_requests: 32,
             max_sse_responses: 16,
             upload_idle_timeout: Duration::from_secs(15),
-            response_idle_timeout: Duration::from_mins(2),
+            // The public layer must outlive the five-minute empty write_stdin poll.
+            response_idle_timeout: Duration::from_mins(6),
+            trusted_openai_header_salt: None,
         }
     }
 }
@@ -98,6 +111,7 @@ struct Admission {
     upload_idle_timeout: Duration,
     response_idle_timeout: Duration,
     allowed_origins: Arc<[String]>,
+    trusted_openai_header_salt: Option<Arc<[u8]>>,
 }
 
 /// Builds the fixed `/mcp` Streamable HTTP router.
@@ -134,6 +148,7 @@ pub fn router(
         upload_idle_timeout: config.upload_idle_timeout,
         response_idle_timeout: config.response_idle_timeout,
         allowed_origins: config.allowed_origins.into(),
+        trusted_openai_header_salt: config.trusted_openai_header_salt.map(Into::into),
     };
     Ok(Router::new()
         .nest_service(MCP_ENDPOINT, service)
@@ -146,6 +161,11 @@ async fn enforce_admission(
     next: Next,
 ) -> Response {
     let headers = request.headers();
+    let authenticated_principal = request.extensions().get::<AuthenticatedPrincipal>();
+    let identity = admission
+        .trusted_openai_header_salt
+        .as_deref()
+        .and_then(|salt| trusted_call_identity(headers, salt, authenticated_principal));
     let header_bytes = headers
         .iter()
         .map(|(name, value)| name.as_str().len().saturating_add(value.as_bytes().len()))
@@ -174,7 +194,7 @@ async fn enforce_admission(
         );
     };
     let sse_permit = None;
-    let request = match buffer_request_body(
+    let mut request = match buffer_request_body(
         request,
         admission.max_request_body_bytes,
         admission.upload_idle_timeout,
@@ -184,9 +204,19 @@ async fn enforce_admission(
         Ok(request) => request,
         Err(response) => return response,
     };
-    let Ok(response) =
-        tokio::time::timeout(admission.response_idle_timeout, next.run(request)).await
-    else {
+    if let Some(identity) = &identity {
+        request.extensions_mut().insert(identity.clone());
+    }
+    let response = async move {
+        if let Some(identity) = identity {
+            TRUSTED_CALL_IDENTITY
+                .scope(identity, next.run(request))
+                .await
+        } else {
+            next.run(request).await
+        }
+    };
+    let Ok(response) = tokio::time::timeout(admission.response_idle_timeout, response).await else {
         return plain_response(StatusCode::GATEWAY_TIMEOUT, "response timed out");
     };
     let is_sse = response.headers().get(CONTENT_TYPE).is_some_and(|value| {
@@ -209,6 +239,44 @@ async fn enforce_admission(
         sse_permit,
         admission.response_idle_timeout,
     )
+}
+
+fn trusted_call_identity(
+    headers: &axum::http::HeaderMap,
+    salt: &[u8],
+    authenticated_principal: Option<&AuthenticatedPrincipal>,
+) -> Option<CallIdentity> {
+    let session = bounded_header(headers, "x-openai-session")
+        .or_else(|| bounded_header(headers, "mcp-session-id"))?;
+    let principal_fingerprint = authenticated_principal.map_or_else(
+        || {
+            bounded_header(headers, "x-openai-subject")
+                .map(|principal| fingerprint(salt, principal))
+        },
+        |principal| Some(principal.principal_fingerprint.clone()),
+    )?;
+    Some(CallIdentity {
+        principal_fingerprint,
+        session_fingerprint: fingerprint(salt, session),
+    })
+}
+
+fn bounded_header<'a>(headers: &'a axum::http::HeaderMap, name: &str) -> Option<&'a [u8]> {
+    let value = headers.get(name)?.as_bytes();
+    (!value.is_empty() && value.len() <= 4_096).then_some(value)
+}
+
+fn fingerprint(salt: &[u8], value: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(salt);
+    digest.update(value);
+    digest
+        .finalize()
+        .iter()
+        .fold(String::with_capacity(64), |mut output, byte| {
+            write!(output, "{byte:02x}").expect("writing to a String cannot fail");
+            output
+        })
 }
 
 async fn buffer_request_body(
@@ -314,7 +382,9 @@ fn too_many_sse_responses() -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{hold_permits_and_enforce_response_idle, too_many_sse_responses};
+    use super::{
+        hold_permits_and_enforce_response_idle, too_many_sse_responses, trusted_call_identity,
+    };
     use axum::body::{Body, Bytes, to_bytes};
     use axum::http::StatusCode;
     use axum::response::Response;
@@ -323,6 +393,65 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::sync::Semaphore;
+
+    #[test]
+    fn trusted_openai_headers_are_salted_and_conversation_specific() {
+        let headers = axum::http::HeaderMap::from_iter([
+            (
+                "x-openai-session".parse().unwrap(),
+                "conversation-a".parse().unwrap(),
+            ),
+            (
+                "x-openai-subject".parse().unwrap(),
+                "owner".parse().unwrap(),
+            ),
+        ]);
+        let first = trusted_call_identity(&headers, b"deployment-salt", None).unwrap();
+        let repeated = trusted_call_identity(&headers, b"deployment-salt", None).unwrap();
+        assert_eq!(first, repeated);
+        assert!(!first.session_fingerprint.contains("conversation-a"));
+        let mut other = headers;
+        other.insert("x-openai-session", "conversation-b".parse().unwrap());
+        let other = trusted_call_identity(&other, b"deployment-salt", None).unwrap();
+        assert_eq!(first.principal_fingerprint, other.principal_fingerprint);
+        assert_ne!(first.session_fingerprint, other.session_fingerprint);
+    }
+
+    #[test]
+    fn authenticated_grant_overrides_spoofable_subject_but_keeps_conversation_affinity() {
+        let headers = axum::http::HeaderMap::from_iter([(
+            "x-openai-session".parse().unwrap(),
+            "conversation-a".parse().unwrap(),
+        )]);
+        let principal = super::AuthenticatedPrincipal {
+            principal_fingerprint: "oauth-grant-fingerprint".to_owned(),
+        };
+        let identity =
+            trusted_call_identity(&headers, b"deployment-salt", Some(&principal)).unwrap();
+        assert_eq!(identity.principal_fingerprint, "oauth-grant-fingerprint");
+        assert!(!identity.session_fingerprint.contains("conversation-a"));
+    }
+
+    #[test]
+    fn authenticated_grant_uses_standard_mcp_session_when_openai_header_is_absent() {
+        let headers = axum::http::HeaderMap::from_iter([(
+            "mcp-session-id".parse().unwrap(),
+            "streamable-http-session".parse().unwrap(),
+        )]);
+        let principal = super::AuthenticatedPrincipal {
+            principal_fingerprint: "oauth-grant-fingerprint".to_owned(),
+        };
+
+        let identity =
+            trusted_call_identity(&headers, b"deployment-salt", Some(&principal)).unwrap();
+
+        assert_eq!(identity.principal_fingerprint, "oauth-grant-fingerprint");
+        assert!(
+            !identity
+                .session_fingerprint
+                .contains("streamable-http-session")
+        );
+    }
 
     #[tokio::test]
     async fn response_body_idle_timeout_releases_request_and_sse_permits() {

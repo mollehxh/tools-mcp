@@ -1,9 +1,8 @@
-use crate::context::ApplicationContext;
+use crate::context::{ApplicationContext, current_identity};
 use crate::result::{
     error_result, internal_serialization_error, invalid_arguments, success_result,
 };
-use codex_tools_runtime::contracts::ApplyPatchInput;
-use codex_tools_runtime::process::{PendingResult, ProcessError};
+use mcp_agent_tool_contracts::{BackendError, CallContext, CallIdentity, ToolOutput, ToolRequest};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, ErrorCode, ListToolsResult, ServerCapabilities,
     ServerInfo, Tool,
@@ -12,8 +11,10 @@ use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
-use skill_store::{SkillListInput, SkillReadInput, SkillStoreError};
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
+
+const SERVER_INSTRUCTIONS: &str = "Five local coding and skill tools with fixed managed-root authority. Interactive and browser-backed CLI authentication is supported. When a user asks to authenticate GitHub, run `gh auth login --web` with exec_command and tty=true, show the returned URL and one-time code, retain its session_id, then use write_stdin to poll after the user confirms and verify with `gh auth status`. Never claim that browser authentication is blocked merely because the human must approve it; initiate the device flow and let the user complete the provider page. Discover the reserved built-in installer with skills.list scope system, then read exactly scope system, package skill-installer, resource skill://host/system/skill-installer/SKILL.md.";
 
 #[derive(Clone)]
 pub struct AgentHandler {
@@ -36,133 +37,45 @@ impl AgentHandler {
         name: &str,
         arguments: Option<Map<String, Value>>,
     ) -> CallToolResponse {
-        let result = match name {
-            "exec_command" => self.exec_command(arguments).await,
-            "write_stdin" => self.write_stdin(arguments).await,
-            "apply_patch" => self.apply_patch(arguments).await,
-            "skills.list" => self.list_skills(arguments).await,
-            "skills.read" => self.read_skill(arguments).await,
-            _ => error_result("unknown_tool", "the requested tool is not available", None),
-        };
-        result.into()
-    }
-
-    async fn exec_command(
-        &self,
-        arguments: Option<Map<String, Value>>,
-    ) -> rmcp::model::CallToolResult {
-        let input: codex_tools_runtime::contracts::ExecCommandInput = match decode(arguments) {
-            Ok(input) => input,
-            Err(error) => return invalid_arguments(error),
-        };
-        pending_result(
-            self.context
-                .processes
-                .exec_command(&self.context.owner, input)
-                .await,
+        self.call_with_context(
+            name,
+            arguments,
+            CallContext::new(CancellationToken::new(), None),
         )
         .await
     }
 
-    async fn write_stdin(
+    async fn call_with_context(
         &self,
+        name: &str,
         arguments: Option<Map<String, Value>>,
-    ) -> rmcp::model::CallToolResult {
-        let input: codex_tools_runtime::contracts::WriteStdinInput = match decode(arguments) {
-            Ok(input) => input,
-            Err(error) => return invalid_arguments(error),
-        };
-        pending_result(
-            self.context
-                .processes
-                .write_stdin(&self.context.owner, input)
-                .await,
-        )
-        .await
-    }
-
-    async fn apply_patch(
-        &self,
-        arguments: Option<Map<String, Value>>,
-    ) -> rmcp::model::CallToolResult {
-        let input: ApplyPatchInput = match decode(arguments) {
-            Ok(input) => input,
-            Err(error) => return invalid_arguments(error),
-        };
-        let authority = self.context.authority.clone();
-        match tokio::task::spawn_blocking(move || {
-            codex_tools_runtime::patch::apply_patch(&authority, &input)
-        })
-        .await
-        {
-            Ok(Ok(output)) => {
-                success_result(&output).unwrap_or_else(|_| internal_serialization_error())
-            }
-            Ok(Err(error)) => error_result("apply_patch_failed", &error.to_string(), None),
-            Err(_) => error_result(
-                "apply_patch_failed",
-                "the patch worker stopped unexpectedly",
-                None,
-            ),
+        context: CallContext,
+    ) -> CallToolResponse {
+        if self.get_tool(name).is_none() {
+            return error_result("unknown_tool", "the requested tool is not available", None)
+                .into();
         }
-    }
-
-    async fn list_skills(
-        &self,
-        arguments: Option<Map<String, Value>>,
-    ) -> rmcp::model::CallToolResult {
-        let input: SkillListInput = match decode(arguments) {
-            Ok(input) => input,
-            Err(error) => return invalid_arguments(error),
+        let request = match decode_request(name, arguments) {
+            Ok(request) => request,
+            Err(error) => return invalid_arguments(error).into(),
         };
-        let catalog = Arc::clone(&self.context.catalog);
-        match tokio::task::spawn_blocking(move || catalog.list(&input)).await {
-            Ok(Ok(output)) => {
-                success_result(&output).unwrap_or_else(|_| internal_serialization_error())
-            }
-            Ok(Err(error)) => store_error(&error),
-            Err(_) => error_result(
-                "skill_store_failed",
-                "the skill catalog worker stopped unexpectedly",
-                None,
-            ),
-        }
-    }
-
-    async fn read_skill(
-        &self,
-        arguments: Option<Map<String, Value>>,
-    ) -> rmcp::model::CallToolResult {
-        let input: SkillReadInput = match decode(arguments) {
-            Ok(input) => input,
-            Err(error) => return invalid_arguments(error),
-        };
-        let catalog = Arc::clone(&self.context.catalog);
-        match tokio::task::spawn_blocking(move || catalog.read(&input)).await {
-            Ok(Ok(output)) => {
-                success_result(&output).unwrap_or_else(|_| internal_serialization_error())
-            }
-            Ok(Err(error)) => store_error(&error),
-            Err(_) => error_result(
-                "skill_store_failed",
-                "the skill catalog worker stopped unexpectedly",
-                None,
-            ),
+        match self.context.backend.call(context, request).await {
+            Ok(output) => render_output(output).into(),
+            Err(error) => render_error(&error).into(),
         }
     }
 }
 
 impl ServerHandler for AgentHandler {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "Five local coding and skill tools with fixed managed-root authority. Discover the reserved built-in installer with skills.list scope system, then read exactly scope system, package skill-installer, resource skill://host/system/skill-installer/SKILL.md.",
-        )
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_instructions(SERVER_INSTRUCTIONS)
     }
 
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         if self.get_tool(&request.name).is_none() {
             return Err(ErrorData::new(
@@ -171,7 +84,19 @@ impl ServerHandler for AgentHandler {
                 None,
             ));
         }
-        Ok(self.call(&request.name, request.arguments).await)
+        let identity = context
+            .extensions
+            .get::<axum::http::request::Parts>()
+            .and_then(|parts| parts.extensions.get::<CallIdentity>())
+            .cloned()
+            .or_else(current_identity);
+        let mut call_context = CallContext::new(context.ct, None);
+        if let Some(identity) = identity {
+            call_context = call_context.with_identity(identity);
+        }
+        Ok(self
+            .call_with_context(&request.name, request.arguments, call_context)
+            .await)
     }
 
     async fn list_tools(
@@ -189,45 +114,48 @@ impl ServerHandler for AgentHandler {
     }
 }
 
+fn decode_request(
+    name: &str,
+    arguments: Option<Map<String, Value>>,
+) -> Result<ToolRequest, String> {
+    match name {
+        "exec_command" => decode(arguments).map(ToolRequest::ExecCommand),
+        "write_stdin" => decode(arguments).map(ToolRequest::WriteStdin),
+        "apply_patch" => decode(arguments).map(ToolRequest::ApplyPatch),
+        "skills.list" => decode(arguments).map(ToolRequest::SkillsList),
+        "skills.read" => decode(arguments).map(ToolRequest::SkillsRead),
+        _ => Err("the requested tool is not available".to_owned()),
+    }
+}
+
 fn decode<T: DeserializeOwned>(arguments: Option<Map<String, Value>>) -> Result<T, String> {
     serde_json::from_value(Value::Object(arguments.unwrap_or_default()))
         .map_err(|error| format!("arguments do not match the tool schema: {error}"))
 }
 
-async fn pending_result(
-    result: Result<PendingResult, ProcessError>,
-) -> rmcp::model::CallToolResult {
-    match result {
-        Ok(pending) => match pending.handoff().await {
-            Ok(output) => {
-                success_result(&output).unwrap_or_else(|_| internal_serialization_error())
-            }
-            Err(error) => process_error(&error),
-        },
-        Err(error) => process_error(&error),
+fn render_output(output: ToolOutput) -> rmcp::model::CallToolResult {
+    let result = match output {
+        ToolOutput::ExecCommand(value) | ToolOutput::WriteStdin(value) => success_result(&value),
+        ToolOutput::ApplyPatch(value) => success_result(&value),
+        ToolOutput::TerminateSession(value) => success_result(&value),
+        ToolOutput::SkillsList(value) => success_result(&value),
+        ToolOutput::SkillsRead(value) => success_result(&value),
+    };
+    result.unwrap_or_else(|_| internal_serialization_error())
+}
+
+fn render_error(error: &BackendError) -> rmcp::model::CallToolResult {
+    error_result(error.code, &error.message, error.details.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SERVER_INSTRUCTIONS;
+
+    #[test]
+    fn server_instructions_require_agents_to_drive_human_cli_auth_flows() {
+        assert!(SERVER_INSTRUCTIONS.contains("gh auth login --web"));
+        assert!(SERVER_INSTRUCTIONS.contains("write_stdin"));
+        assert!(SERVER_INSTRUCTIONS.contains("Never claim that browser authentication is blocked"));
     }
-}
-
-fn process_error(error: &ProcessError) -> rmcp::model::CallToolResult {
-    let code = match error {
-        ProcessError::Capacity { .. } => "capacity_exhausted",
-        ProcessError::UnknownSession { .. } => "unknown_session",
-        ProcessError::StdinClosed { .. } => "stdin_closed",
-        ProcessError::ShuttingDown => "shutting_down",
-        ProcessError::UnsupportedShell { .. } => "unsupported_shell",
-        ProcessError::Spawn(_) => "command_launch_failed",
-        ProcessError::Interaction(_) => "process_interaction_failed",
-    };
-    error_result(code, &error.to_string(), None)
-}
-
-fn store_error(error: &SkillStoreError) -> rmcp::model::CallToolResult {
-    let code = match error {
-        SkillStoreError::InvalidCursor { .. } => "invalid_cursor",
-        SkillStoreError::StaleCursor { .. } => "stale_cursor",
-        SkillStoreError::PackageUnavailable => "package_unavailable",
-        SkillStoreError::InvalidResource => "invalid_resource",
-        _ => "skill_store_failed",
-    };
-    error_result(code, &error.to_string(), None)
 }

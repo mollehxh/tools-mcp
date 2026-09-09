@@ -1,0 +1,25 @@
+[Unit]
+Description=tools-mcp privacy-safe host metrics snapshot
+After=tools-mcp-storage.service tools-mcp-container.service docker.service
+Requires=tools-mcp-storage.service tools-mcp-container.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=-/etc/tools-mcp/metrics.env
+ExecStart=/opt/tools-mcp/current/libexec/collect-host-metrics
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=no
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/tools-mcp/metrics
+UMask=0077

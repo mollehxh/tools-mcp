@@ -1,0 +1,97 @@
+#!/bin/sh
+set -eu
+
+fail() { printf 'STOP: %s\n' "$*" >&2; exit 1; }
+[ "$(id -u)" -eq 0 ] || fail "identity bootstrap requires root"
+command -v openssl >/dev/null || fail "OpenSSL is unavailable"
+
+ca_root=/root/.tools-mcp-ca
+pki=/etc/tools-mcp/pki
+gateway_pki=$pki/gateway
+runner_state=/var/lib/tools-mcp/runner
+device_registry=$pki/devices
+owner_secret=/root/.tools-mcp-owner-secret
+token_hash_key=/etc/tools-mcp/token-hash.key
+install -d -m 0750 -o root -g tools-mcp-gateway /etc/tools-mcp
+install -d -m 0700 "$ca_root"
+install -d -m 0755 "$pki"
+install -d -m 0750 -o tools-mcp-gateway -g tools-mcp-gateway "$gateway_pki"
+install -d -m 0750 -o tools-mcp-gateway -g tools-mcp-gateway "$device_registry"
+install -d -m 0700 -o tools-mcp-workload -g tools-mcp-workload "$runner_state"
+
+if [ ! -s "$ca_root/ca.key" ]; then
+  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -out "$ca_root/ca.key"
+  chmod 0400 "$ca_root/ca.key"
+  openssl req -x509 -new -sha256 -days 3650 -key "$ca_root/ca.key" \
+    -subj '/CN=tools-mcp offline device CA' \
+    -addext 'basicConstraints=critical,CA:TRUE,pathlen:0' \
+    -addext 'keyUsage=critical,keyCertSign,cRLSign' \
+    -out "$ca_root/ca.pem"
+  chmod 0444 "$ca_root/ca.pem"
+fi
+
+if [ ! -s "$gateway_pki/server.key" ]; then
+  temporary=$(mktemp -d)
+  trap 'rm -rf -- "$temporary"' EXIT HUP INT TERM
+  openssl req -new -newkey rsa:3072 -nodes \
+    -keyout "$temporary/server.key" -out "$temporary/server.csr" \
+    -subj '/CN=localhost'
+  cat > "$temporary/server.ext" <<'EOF'
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName=DNS:localhost,DNS:fidela-unsubversive-imaginarily.ngrok-free.dev,IP:127.0.0.1,IP:178.215.236.207
+EOF
+  openssl x509 -req -sha256 -days 90 -in "$temporary/server.csr" \
+    -CA "$ca_root/ca.pem" -CAkey "$ca_root/ca.key" -CAcreateserial \
+    -extfile "$temporary/server.ext" -out "$temporary/server.pem"
+  install -m 0400 -o tools-mcp-gateway -g tools-mcp-gateway "$temporary/server.key" "$gateway_pki/server.key"
+  install -m 0444 -o tools-mcp-gateway -g tools-mcp-gateway "$temporary/server.pem" "$gateway_pki/server.pem"
+fi
+
+if [ ! -s "$runner_state/device.key" ]; then
+  temporary=${temporary:-$(mktemp -d)}
+  trap 'rm -rf -- "$temporary"' EXIT HUP INT TERM
+  openssl req -new -newkey rsa:3072 -nodes \
+    -keyout "$temporary/device.key" -out "$temporary/device.csr" \
+    -subj '/CN=vps-runner'
+  cat > "$temporary/device.ext" <<'EOF'
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature
+extendedKeyUsage=clientAuth
+EOF
+  openssl x509 -req -sha256 -days 90 -in "$temporary/device.csr" \
+    -CA "$ca_root/ca.pem" -CAkey "$ca_root/ca.key" -CAcreateserial \
+    -extfile "$temporary/device.ext" -out "$temporary/device.pem"
+  install -m 0400 -o tools-mcp-workload -g tools-mcp-workload "$temporary/device.key" "$runner_state/device.key"
+  install -m 0444 -o tools-mcp-workload -g tools-mcp-workload "$temporary/device.pem" "$runner_state/device.pem"
+fi
+
+install -m 0444 -o tools-mcp-gateway -g tools-mcp-gateway "$ca_root/ca.pem" "$gateway_pki/device-ca.pem"
+install -m 0444 -o tools-mcp-gateway -g tools-mcp-gateway "$runner_state/device.pem" "$device_registry/vps-runner.pem"
+install -m 0444 -o tools-mcp-workload -g tools-mcp-workload "$ca_root/ca.pem" "$runner_state/relay-ca.pem"
+if [ ! -s "$owner_secret" ]; then
+  umask 077
+  openssl rand -base64 48 > "$owner_secret"
+fi
+chmod 0400 "$owner_secret"
+
+if [ ! -s "$token_hash_key" ]; then
+  temporary=${temporary:-$(mktemp -d)}
+  trap 'rm -rf -- "$temporary"' EXIT HUP INT TERM
+  openssl rand 32 > "$temporary/token-hash.key"
+  install -m 0400 -o tools-mcp-gateway -g tools-mcp-gateway \
+    "$temporary/token-hash.key" "$token_hash_key"
+fi
+[ "$(wc -c < "$token_hash_key")" -eq 32 ] || fail "OAuth token hash key must be exactly 32 bytes"
+token_hash_key_id=$(sha256sum "$token_hash_key" | awk '{print $1}')
+printf 'sha256:%s\n' "$token_hash_key_id" > /etc/tools-mcp/token-hash.key-id
+chown root:tools-mcp-gateway /etc/tools-mcp/token-hash.key-id
+chmod 0440 /etc/tools-mcp/token-hash.key-id
+device_ca_key_id=$(openssl x509 -in "$ca_root/ca.pem" -outform DER | sha256sum | awk '{print $1}')
+printf 'sha256:%s\n' "$device_ca_key_id" > /etc/tools-mcp/device-ca.key-id
+chown root:tools-mcp-gateway /etc/tools-mcp/device-ca.key-id
+chmod 0440 /etc/tools-mcp/device-ca.key-id
+
+openssl verify -CAfile "$ca_root/ca.pem" -purpose sslserver "$gateway_pki/server.pem" >/dev/null
+openssl verify -CAfile "$ca_root/ca.pem" -purpose sslclient "$runner_state/device.pem" >/dev/null

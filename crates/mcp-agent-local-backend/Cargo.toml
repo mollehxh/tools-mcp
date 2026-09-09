@@ -1,0 +1,17 @@
+[package]
+name = "mcp-agent-local-backend"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+codex-tools-runtime = { path = "../codex-tools-runtime" }
+mcp-agent-authority = { path = "../mcp-agent-authority" }
+mcp-agent-tool-contracts = { path = "../mcp-agent-tool-contracts" }
+skill-store = { path = "../skill-store" }
+sha2.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

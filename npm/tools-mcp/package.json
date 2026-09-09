@@ -1,0 +1,21 @@
+{
+  "name": "tools-mcp",
+  "version": "0.1.0",
+  "description": "Run the tools-mcp local worker from the current project",
+  "license": "Apache-2.0",
+  "bin": {
+    "tools-mcp": "bin/tools-mcp.js"
+  },
+  "files": [
+    "bin",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "tools-mcp-darwin-arm64": "0.1.0",
+    "tools-mcp-darwin-x64": "0.1.0",
+    "tools-mcp-win32-x64": "0.1.0"
+  }
+}

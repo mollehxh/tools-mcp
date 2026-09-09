@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
+#[cfg(unix)]
 use std::fmt::Write as _;
 use std::fs;
 use std::fs::File;
@@ -47,12 +48,26 @@ pub struct SandboxManifest {
     pub capability_protocol: String,
     pub upstream_commit: String,
     pub target: String,
+    pub enforcement: SandboxEnforcement,
     pub artifact_path: PathBuf,
     pub artifact_sha256: String,
     pub policy_path: PathBuf,
     pub policy_sha256: String,
     pub canary_path: PathBuf,
     pub canary_sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxEnforcement {
+    pub token_model: String,
+    pub capability_sid_policy: String,
+    pub deny_only_sid_policy: String,
+    pub integrity_policy: String,
+    pub privilege_policy: String,
+    pub acl_policy: String,
+    pub inherited_handle_policy: String,
+    pub process_tree_policy: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -155,6 +170,7 @@ pub fn expected_manifest() -> Result<SandboxManifest, SandboxError> {
         capability_protocol: CAPABILITY_PROTOCOL.to_owned(),
         upstream_commit: PINNED_CODEX_COMMIT.to_owned(),
         target: current_target(),
+        enforcement: native_enforcement(),
         artifact_path,
         artifact_sha256,
         policy_path,
@@ -447,6 +463,7 @@ fn wrap_with_reexec(command: &Command, adapter: &Path, token: &str) -> Command {
     wrapped
 }
 
+#[cfg_attr(windows, allow(clippy::unnecessary_wraps))]
 fn random_reexec_token() -> Result<String, SandboxError> {
     #[cfg(unix)]
     {
@@ -478,6 +495,7 @@ fn close_inherited_descriptors() -> Result<(), SandboxError> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 fn close_inherited_descriptors() -> Result<(), SandboxError> {
     Ok(())
 }
@@ -491,6 +509,11 @@ impl VerifiedSandbox {
     #[must_use]
     pub fn capabilities(&self) -> Option<&CapabilitySnapshot> {
         self.sandbox.authority.capabilities()
+    }
+
+    #[must_use]
+    pub fn workspace_root(&self) -> &Path {
+        self.sandbox.authority.workspace_root()
     }
 
     pub fn command(
@@ -634,6 +657,58 @@ fn native_policy_bytes() -> &'static [u8] {
     return windows::POLICY_DESCRIPTION.as_bytes();
     #[allow(unreachable_code)]
     b"unsupported"
+}
+
+fn native_enforcement() -> SandboxEnforcement {
+    #[cfg(target_os = "windows")]
+    return SandboxEnforcement {
+        token_model: "CreateRestrictedToken(DISABLE_MAX_PRIVILEGE|LUA_TOKEN|WRITE_RESTRICTED)"
+            .to_owned(),
+        capability_sid_policy:
+            "S-1-5-21 plus first 128 SHA-256 bits of lowercase canonical write roots".to_owned(),
+        deny_only_sid_policy: "LUA_TOKEN converts administrator SIDs to deny-only".to_owned(),
+        integrity_policy: "token integrity RID must be <= 8192 (medium)".to_owned(),
+        privilege_policy: "all privileges disabled except SeChangeNotifyPrivilege".to_owned(),
+        acl_policy: "each declared root grants its capability SID inherited modify access"
+            .to_owned(),
+        inherited_handle_policy:
+            "PROC_THREAD_ATTRIBUTE_HANDLE_LIST contains only stdin/stdout/stderr".to_owned(),
+        process_tree_policy:
+            "CREATE_SUSPENDED; assign non-breakaway KILL_ON_JOB_CLOSE job; ResumeThread".to_owned(),
+    };
+    #[cfg(target_os = "macos")]
+    return SandboxEnforcement {
+        token_model: "sandbox-exec seatbelt profile".to_owned(),
+        capability_sid_policy: "not-applicable".to_owned(),
+        deny_only_sid_policy: "not-applicable".to_owned(),
+        integrity_policy: "not-applicable".to_owned(),
+        privilege_policy: "seatbelt policy".to_owned(),
+        acl_policy: "canonical declared-root literals".to_owned(),
+        inherited_handle_policy: "close non-stdio descriptors before native adapter".to_owned(),
+        process_tree_policy: "runtime-owned process group".to_owned(),
+    };
+    #[cfg(target_os = "linux")]
+    return SandboxEnforcement {
+        token_model: "bubblewrap user namespace".to_owned(),
+        capability_sid_policy: "not-applicable".to_owned(),
+        deny_only_sid_policy: "not-applicable".to_owned(),
+        integrity_policy: "not-applicable".to_owned(),
+        privilege_policy: "no-new-privileges and capability drop".to_owned(),
+        acl_policy: "declared bind mounts".to_owned(),
+        inherited_handle_policy: "close non-stdio descriptors before native adapter".to_owned(),
+        process_tree_policy: "runtime-owned process group".to_owned(),
+    };
+    #[allow(unreachable_code)]
+    SandboxEnforcement {
+        token_model: "unsupported".to_owned(),
+        capability_sid_policy: "unsupported".to_owned(),
+        deny_only_sid_policy: "unsupported".to_owned(),
+        integrity_policy: "unsupported".to_owned(),
+        privilege_policy: "unsupported".to_owned(),
+        acl_policy: "unsupported".to_owned(),
+        inherited_handle_policy: "unsupported".to_owned(),
+        process_tree_policy: "unsupported".to_owned(),
+    }
 }
 
 fn current_target() -> String {

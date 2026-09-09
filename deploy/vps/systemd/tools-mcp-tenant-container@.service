@@ -1,0 +1,32 @@
+[Unit]
+Description=tools-mcp isolated tenant %i development container
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=all
+User=tools-mcp-%i
+Group=tools-mcp-%i
+EnvironmentFile=/etc/tools-mcp/tenants/%i/workload.env
+Environment=PODMAN_SYSTEMD_UNIT=%n
+ExecStartPre=/opt/tools-mcp/current/libexec/rootless-preflight
+ExecStart=/opt/tools-mcp/current/libexec/supervise-container
+ExecStop=/usr/bin/podman stop --time 10 tools-mcp-%i-workspace
+Restart=on-failure
+RestartSec=2s
+TimeoutStartSec=120s
+TimeoutStopSec=30s
+LimitCORE=0
+NoNewPrivileges=no
+ProtectHome=no
+ReadWritePaths=/var/lib/tools-mcp-tenants/%i
+PrivateDevices=yes
+BindPaths=/dev/net/tun
+DeviceAllow=/dev/net/tun rw
+ProtectSystem=full
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

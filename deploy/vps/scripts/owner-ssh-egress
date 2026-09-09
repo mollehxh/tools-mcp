@@ -1,0 +1,18 @@
+#!/bin/sh
+# Opt-in for the single-owner workspace only. Never share this workspace
+# with ordinary tenants: host SSH credentials confer host administration.
+set -eu
+config=/etc/tools-mcp/owner-ssh-address
+[ -f "$config" ] || exit 0
+[ "$(stat -c %u "$config")" = 0 ] || exit 1
+case "$(stat -c %a "$config")" in 600|640|644) ;; *) exit 1 ;; esac
+address=$(cat "$config")
+printf '%s\n' "$address" | awk -F. 'NF != 4 {exit 1} {for(i=1;i<=4;i++) if ($i !~ /^[0-9]+$/ || $i>255) exit 1}'
+ip -o -4 address show scope global | awk '{sub(/\/.*/, "", $4); print $4}' | grep -Fxq "$address"
+pid=$(podman inspect tools-mcp-workspace --format '{{.State.Pid}}')
+case "$pid" in ''|*[!0-9]*) exit 1 ;; esac
+[ "$pid" -gt 1 ]
+# Insert ahead of the blanket host-address rejection. Repeated calls are
+# harmless; configure-egress recreates the table on container preparation.
+podman unshare nsenter --target "$pid" --net /usr/sbin/nft \
+  insert rule inet tools_mcp_egress output ip daddr "$address" tcp dport 22 accept

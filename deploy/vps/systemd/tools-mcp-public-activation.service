@@ -1,0 +1,17 @@
+[Unit]
+Description=Activate tools-mcp public surfaces only after private readiness
+After=tools-mcp-runner.service tools-mcp-shared-router.service
+Requires=tools-mcp-gateway.service tools-mcp-container.service tools-mcp-shared-router.service
+PartOf=tools-mcp-gateway.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/tools-mcp/current/libexec/wait-gateway-ready
+ExecStart=/usr/bin/systemctl start tools-mcp-relay-edge.socket tools-mcp-ngrok.service
+ExecStop=/usr/bin/systemctl stop tools-mcp-ngrok.service tools-mcp-relay-edge.socket
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=3s
+
+[Install]
+WantedBy=multi-user.target

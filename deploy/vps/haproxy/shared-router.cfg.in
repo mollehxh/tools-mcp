@@ -1,0 +1,68 @@
+global
+    log stdout format raw local0
+    user haproxy
+    group haproxy
+    stats socket /run/tools-mcp-ingress/admin.sock mode 0600 level admin
+
+defaults
+    log global
+    mode http
+    option httplog
+    option http-keep-alive
+    timeout connect 5s
+    timeout client 5m
+    timeout server 5m
+    timeout tunnel 5m
+
+frontend shared_ngrok_ingress
+    bind 127.0.0.1:8000
+
+    acl yandex_path path /yandex-mail/mcp
+    acl yandex_path path /yandex-mail/register
+    acl yandex_path path /yandex-mail/authorize
+    acl yandex_path path /yandex-mail/token
+    acl yandex_path path /yandex-mail/revoke
+    acl yandex_path path /yandex-mail/oauth/yandex/callback
+    acl yandex_path path /.well-known/oauth-protected-resource/yandex-mail/mcp
+    acl yandex_path path /.well-known/oauth-authorization-server/yandex-mail
+
+    acl tools_path path /mcp
+    acl tools_path path /authorize
+    acl tools_path path /token
+    acl tools_path path /.well-known/oauth-protected-resource/mcp
+    acl tools_path path /.well-known/oauth-authorization-server
+    acl tools_path path /.well-known/openid-configuration
+    acl tools_path path /oauth-client/chatgpt.json
+
+    acl tenant_u1_path path /u1/mcp /u1/authorize /u1/token /u1/.well-known/oauth-protected-resource/mcp /u1/.well-known/oauth-authorization-server /u1/.well-known/openid-configuration /u1/oauth-client/chatgpt.json /.well-known/oauth-protected-resource/u1/mcp /.well-known/oauth-authorization-server/u1
+
+    use_backend yandex_mail if yandex_path
+    use_backend tools_mcp_tenant_u1 if tenant_u1_path
+    use_backend tools_mcp if tools_path
+    default_backend unmatched
+
+backend yandex_mail
+    option httpchk
+    http-check send meth GET uri /health hdr Host fidela-unsubversive-imaginarily.ngrok-free.dev
+    http-check expect status 200
+    server yandex @YANDEX_IP@:3000 check inter 5s fall 2 rise 2
+
+backend tools_mcp
+    option httpchk
+    http-check send meth GET uri /healthz hdr Host fidela-unsubversive-imaginarily.ngrok-free.dev
+    http-check expect status 200
+    server gateway 127.0.0.1:8443 ssl sni str(localhost) verify required verifyhost localhost ca-file /etc/tools-mcp/pki/gateway/device-ca.pem check inter 2s fall 2 rise 2
+
+backend tools_mcp_tenant_u1
+    acl tenant_u1_rfc_resource path /.well-known/oauth-protected-resource/u1/mcp
+    acl tenant_u1_rfc_authority path /.well-known/oauth-authorization-server/u1
+    http-request set-path %[path,regsub(^/u1,)]
+    http-request set-path /.well-known/oauth-protected-resource/mcp if tenant_u1_rfc_resource
+    http-request set-path /.well-known/oauth-authorization-server if tenant_u1_rfc_authority
+    option httpchk
+    http-check send meth GET uri /healthz hdr Host fidela-unsubversive-imaginarily.ngrok-free.dev
+    http-check expect status 200
+    server tenant_u1_gateway 127.0.0.1:8453 ssl sni str(localhost) verify required verifyhost localhost ca-file /etc/tools-mcp/pki/gateway/device-ca.pem check inter 2s fall 2 rise 2
+
+backend unmatched
+    http-request return status 404 content-type text/plain string "not found\n"

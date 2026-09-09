@@ -6,21 +6,24 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-codex-tools-runtime = { path = "../codex-tools-runtime" }
-mcp-agent-authority = { path = "../mcp-agent-authority" }
-skill-store = { path = "../skill-store" }
+mcp-agent-tool-contracts = { path = "../mcp-agent-tool-contracts" }
 axum.workspace = true
 futures-util.workspace = true
 rmcp.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
+codex-tools-runtime = { path = "../codex-tools-runtime" }
+mcp-agent-authority = { path = "../mcp-agent-authority" }
+mcp-agent-local-backend = { path = "../mcp-agent-local-backend" }
 reqwest.workspace = true
+skill-store = { path = "../skill-store" }
 tempfile.workspace = true
 
 [lints]

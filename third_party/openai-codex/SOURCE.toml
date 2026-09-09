@@ -120,7 +120,7 @@ symbol = "crate::catalog::SkillCatalog"
 local_path = "crates/skill-store/src/catalog.rs"
 status = "adapter"
 requirements = ["R2", "R3", "R7", "R8", "R9", "R14", "R15", "R16", "R17", "R19", "R20", "R21"]
-local_sha256 = "8a022daf08760c77d6cf70806a13b736ba50b23d42c0f43cc0156ff94a825d88"
+local_sha256 = "e30f4a43f29aff004e7f29ea603e511f58f2e17dbd81121ada5003f1b3d18a98"
 
 [[boundaries.sources]]
 upstream_path = "codex-rs/ext/skills/src/tools/list.rs"
@@ -161,7 +161,7 @@ symbol = "crate::roots"
 local_path = "crates/skill-store/src/roots.rs"
 status = "adapter"
 requirements = ["R7", "R8", "R9", "R14", "R15", "R16", "R17", "R19", "R20", "R21"]
-local_sha256 = "d68eea1100cc92216ce06eb996abc1df68f3a92f94c5449c0f2cb1604dcfc7e3"
+local_sha256 = "1f8d351b4f051cf304f8659a3acda0fc846ffc3c6db9d5f15f48dd337b96b17e"
 
 [[boundaries.sources]]
 upstream_path = "codex-rs/ext/skills/src/host_roots.rs"

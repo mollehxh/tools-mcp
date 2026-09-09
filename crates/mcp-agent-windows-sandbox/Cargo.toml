@@ -1,0 +1,26 @@
+[package]
+name = "mcp-agent-windows-sandbox"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "mcp-agent-windows-sandbox"
+path = "src/main.rs"
+
+[dependencies]
+rcgen.workspace = true
+sha2.workspace = true
+windows-sys.workspace = true
+
+[dev-dependencies]
+rcgen = { workspace = true, features = ["ring", "x509-parser"] }
+tempfile.workspace = true
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+[lints.rust]
+unsafe_code = "allow"

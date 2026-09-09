@@ -1,7 +1,8 @@
-version = 2
-status = "pending"
-required_before = "release"
-endpoint_kind = "temporary_ngrok_https"
+version = 4
+status = "passed"
+required_before = "U2"
+endpoint_kind = "free_stable_ngrok_https_to_loopback_8443"
+endpoint = "https://fidela-unsubversive-imaginarily.ngrok-free.dev/mcp"
 client = "ChatGPT developer mode / Scan Tools"
 expected_tools = [
   "exec_command",
@@ -10,5 +11,12 @@ expected_tools = [
   "skills.list",
   "skills.read",
 ]
-observed_at = ""
-notes = "Protocol v2 removes skills.install. Automated Inspector and conformance do not substitute for a fresh ChatGPT Developer Mode scan; this pending manual checkpoint blocks release signoff, not automated U7 verification."
+observed_at = "2026-08-24"
+registration_mechanism = "cimd"
+observed_protocol_versions = ["2026-07-28"]
+redirect_uris = ["https://chatgpt.com/connector/oauth/5rmDqoFrYfK7"]
+refresh_exchanges = 3
+context_correlation = "stable:x-openai-session"
+principal_correlation = "stable:x-openai-subject"
+port_443_unchanged = true
+notes = "Live ChatGPT Plus/developer-mode checkpoint passed. Direct :8443 registration failed before reaching the VPS; the free stable ngrok HTTPS endpoint succeeded and forwarded to the private 8443 spike without changing the Amnezia-owned host :443 listener. Five tools, CIMD, PKCE consent, three refresh exchanges, and MCP 2026-07-28 were observed. Salted fingerprints proved x-openai-session stable across project/global calls in one conversation and different in a new conversation; raw header values were not retained. Production must accept these headers only at a trusted loopback ingress boundary."

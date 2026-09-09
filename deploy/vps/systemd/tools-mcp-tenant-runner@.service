@@ -1,0 +1,32 @@
+[Unit]
+Description=tools-mcp isolated tenant %i VPS runner
+After=network-online.target tools-mcp-tenant-container@%i.service tools-mcp-tenant-gateway@%i.service
+Requires=tools-mcp-tenant-container@%i.service tools-mcp-tenant-gateway@%i.service
+
+[Service]
+Type=simple
+User=tools-mcp-%i
+Group=tools-mcp-%i
+EnvironmentFile=/etc/tools-mcp/tenants/%i/runner.env
+EnvironmentFile=/etc/tools-mcp/tenants/%i/workload.env
+ExecStartPre=/opt/tools-mcp/current/libexec/verify-container
+ExecStart=/opt/tools-mcp/current/bin/mcp-agent-vps-runner
+Restart=always
+RestartSec=2s
+TimeoutStopSec=30s
+LimitCORE=0
+KillMode=control-group
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=no
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+RestrictSUIDSGID=yes
+ReadWritePaths=/var/lib/tools-mcp-tenants/%i
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

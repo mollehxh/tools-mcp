@@ -7,6 +7,7 @@ use mcp_agent_authority::{
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
+use std::path::PathBuf;
 
 const MAX_SKILL_NAME_BYTES: usize = 256;
 const MAX_DESCRIPTION_CHARS: usize = 1_024;
@@ -16,6 +17,7 @@ const MAX_DISCOVERY_WARNINGS: usize = 20;
 #[derive(Debug)]
 pub(crate) struct SkillRoots {
     authority: WorkspaceAuthority,
+    project_root: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -52,6 +54,14 @@ impl SkillRoots {
     pub fn new(authority: &WorkspaceAuthority) -> Self {
         Self {
             authority: authority.clone(),
+            project_root: None,
+        }
+    }
+
+    pub fn for_project(authority: &WorkspaceAuthority, project_root: PathBuf) -> Self {
+        Self {
+            authority: authority.clone(),
+            project_root: Some(project_root),
         }
     }
 
@@ -166,7 +176,10 @@ impl SkillRoots {
                 }
                 Ok(operations)
             }
-            SkillScope::Project => Ok(self.authority.open_project_skills().ok()),
+            SkillScope::Project => Ok(self.project_root.as_ref().map_or_else(
+                || self.authority.open_project_skills().ok(),
+                |root| self.authority.open_project_skills_at(root).ok(),
+            )),
             SkillScope::Global => Ok(self.authority.open_global_skills().ok()),
         }
     }

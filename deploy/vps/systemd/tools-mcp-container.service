@@ -1,0 +1,43 @@
+[Unit]
+Description=tools-mcp rootless persistent development container
+After=network-online.target tools-mcp-storage.service
+Wants=network-online.target
+Requires=tools-mcp-storage.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=tools-mcp-workload
+Group=tools-mcp-workload
+EnvironmentFile=/etc/tools-mcp/workload.env
+Environment=PODMAN_SYSTEMD_UNIT=%n
+ExecStartPre=/opt/tools-mcp/current/libexec/rootless-preflight
+ExecStart=/usr/bin/podman start tools-mcp-workspace
+ExecStartPost=/opt/tools-mcp/current/libexec/configure-egress
+ExecStartPost=/opt/tools-mcp/current/libexec/verify-container
+ExecStop=/usr/bin/podman stop --time 10 tools-mcp-workspace
+TimeoutStartSec=120s
+TimeoutStopSec=30s
+LimitCORE=0
+# Rootless Podman must invoke the setuid newuidmap/newgidmap helpers to create
+# the subordinate-ID user namespace. The workload itself remains no-new-privileges.
+NoNewPrivileges=no
+ProtectHome=no
+ReadWritePaths=/var/lib/tools-mcp/workspace /var/lib/tools-mcp/home /var/lib/tools-mcp/workload
+PrivateDevices=yes
+# slirp4netns needs only the TUN character device. Keep the private /dev and
+# expose no disks, engine sockets, or other host devices.
+BindPaths=/dev/net/tun
+DeviceAllow=/dev/net/tun rw
+ProtectSystem=full
+# Do not use ProtectKernelTunables/Modules/Logs here. Their locked /proc mounts
+# are inherited by Podman's rootless pause namespace and prevent runc from
+# mounting the container's private procfs. This unprivileged service has no
+# host capabilities with which to change those kernel surfaces.
+# PrivateTmp is also intentionally absent: slirp4netns must mount its own
+# sandbox tmpfs over /tmp inside the rootless pause namespace.
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

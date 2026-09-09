@@ -3,6 +3,7 @@
 use codex_tools_runtime::process::{OwnerId, ProcessManager};
 use mcp_agent_authority::sandbox::{Sandbox, expected_manifest};
 use mcp_agent_authority::{CapabilitySnapshot, WorkspaceAuthority};
+use mcp_agent_local_backend::LocalBackend;
 use mcp_agent_server::{AgentHandler, ApplicationContext};
 use skill_store::SkillCatalog;
 use std::fs;
@@ -13,6 +14,7 @@ pub struct Fixture {
     pub _root: tempfile::TempDir,
     pub workspace: std::path::PathBuf,
     pub processes: Arc<ProcessManager>,
+    pub backend: Arc<LocalBackend>,
     pub context: Arc<ApplicationContext>,
 }
 
@@ -59,16 +61,18 @@ impl Fixture {
             .0;
         let processes = Arc::new(ProcessManager::new(Arc::new(sandbox)));
         let catalog = Arc::new(SkillCatalog::new(&authority).unwrap());
-        let context = Arc::new(ApplicationContext::new(
+        let backend = Arc::new(LocalBackend::new(
             authority,
             Arc::clone(&processes),
             catalog,
             OwnerId::from("local-anonymous"),
         ));
+        let context = Arc::new(ApplicationContext::new(Arc::clone(&backend)));
         Self {
             _root: root,
             workspace,
             processes,
+            backend,
             context,
         }
     }

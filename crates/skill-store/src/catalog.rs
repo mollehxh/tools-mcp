@@ -8,6 +8,7 @@ use crate::resource::{
 };
 use crate::roots::{ScopeSnapshot, SkillRoots};
 use mcp_agent_authority::WorkspaceAuthority;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -70,6 +71,25 @@ impl SkillCatalog {
     /// the catalog state cannot be initialized.
     pub fn new(authority: &WorkspaceAuthority) -> Result<Self, SkillStoreError> {
         let roots = SkillRoots::new(authority);
+        Self::from_roots(roots)
+    }
+
+    /// Builds a catalog whose project scope is rooted in one repository beneath
+    /// the fixed execution workspace while system and global scopes stay unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the project or shared skill capabilities cannot be
+    /// opened and reconciled safely.
+    pub fn for_project(
+        authority: &WorkspaceAuthority,
+        project_root: PathBuf,
+    ) -> Result<Self, SkillStoreError> {
+        let roots = SkillRoots::for_project(authority, project_root);
+        Self::from_roots(roots)
+    }
+
+    fn from_roots(roots: SkillRoots) -> Result<Self, SkillStoreError> {
         let catalog = Self {
             roots,
             state: Mutex::new(CatalogState::default()),

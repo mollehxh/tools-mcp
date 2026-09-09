@@ -1,0 +1,12 @@
+[Unit]
+Description=tools-mcp public mandatory-mTLS relay socket
+After=network-online.target tools-mcp-gateway.service tools-mcp-runner.service
+Requires=tools-mcp-gateway.service
+
+[Socket]
+ListenStream=0.0.0.0:8444
+NoDelay=true
+Accept=false
+
+[Install]
+WantedBy=tools-mcp-public-activation.service

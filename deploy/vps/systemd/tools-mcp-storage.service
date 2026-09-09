@@ -1,0 +1,11 @@
+[Unit]
+Description=Validate tools-mcp durable storage before admission
+Before=tools-mcp-gateway.service tools-mcp-container.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/tools-mcp/current/libexec/storage-preflight
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

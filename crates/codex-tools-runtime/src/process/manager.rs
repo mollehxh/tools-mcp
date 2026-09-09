@@ -1,3 +1,6 @@
+use super::launcher::{CommandLauncher, VerifiedSandboxLauncher};
+#[cfg(target_os = "linux")]
+use super::launcher::{PodmanLaunchConfig, PodmanLauncher};
 use super::output::render_staged;
 use super::pty::{self, RunningProcess};
 use super::state::{OwnerId, ProcessError};
@@ -7,7 +10,7 @@ use mcp_agent_authority::sandbox::VerifiedSandbox;
 use rand::Rng;
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{OsStr, OsString};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -42,7 +45,7 @@ pub struct ProcessManager {
 }
 
 struct Inner {
-    sandbox: Arc<VerifiedSandbox>,
+    launcher: Arc<dyn CommandLauncher>,
     config: ProcessManagerConfig,
     registry: Mutex<Registry>,
     next_id: AtomicI32,
@@ -75,13 +78,13 @@ struct Tombstone {
 
 #[cfg(not(windows))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ShellDialect {
+pub(super) enum ShellDialect {
     Posix,
     Fish,
 }
 
 #[cfg(not(windows))]
-fn shell_dialect(shell: &str) -> Result<ShellDialect, ProcessError> {
+pub(super) fn shell_dialect(shell: &str) -> Result<ShellDialect, ProcessError> {
     match Path::new(shell).file_name().and_then(OsStr::to_str) {
         Some("sh" | "bash" | "zsh") => Ok(ShellDialect::Posix),
         Some("fish") => Ok(ShellDialect::Fish),
@@ -92,7 +95,7 @@ fn shell_dialect(shell: &str) -> Result<ShellDialect, ProcessError> {
 }
 
 #[cfg(not(windows))]
-fn command_with_fixed_environment(
+pub(super) fn command_with_fixed_environment(
     dialect: ShellDialect,
     environment: &BTreeMap<String, OsString>,
     command: &str,
@@ -236,14 +239,33 @@ impl ProcessManager {
     }
 
     #[must_use]
-    pub fn with_config(sandbox: Arc<VerifiedSandbox>, mut config: ProcessManagerConfig) -> Self {
+    pub fn with_config(sandbox: Arc<VerifiedSandbox>, config: ProcessManagerConfig) -> Self {
+        let launcher = Arc::new(VerifiedSandboxLauncher::new(sandbox));
+        Self::with_launcher(launcher, config)
+    }
+
+    /// Creates a manager whose process transport is a verified rootless Podman executable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the Podman binary or immutable container mapping is invalid.
+    #[cfg(target_os = "linux")]
+    pub fn new_podman(config: PodmanLaunchConfig) -> Result<Self, ProcessError> {
+        let launcher = Arc::new(PodmanLauncher::new(config)?);
+        Ok(Self::with_launcher(
+            launcher,
+            ProcessManagerConfig::default(),
+        ))
+    }
+
+    fn with_launcher(launcher: Arc<dyn CommandLauncher>, mut config: ProcessManagerConfig) -> Self {
         config.capacity = config.capacity.min(MAX_UNIFIED_EXEC_PROCESSES);
         config.max_empty_poll_yield = config
             .max_empty_poll_yield
             .max(Duration::from_millis(MIN_EMPTY_YIELD_TIME_MS));
         Self {
             inner: Arc::new(Inner {
-                sandbox,
+                launcher,
                 config,
                 registry: Mutex::new(Registry::default()),
                 next_id: AtomicI32::new(1_000),
@@ -325,6 +347,19 @@ impl ProcessManager {
         })
     }
 
+    /// Resolves a requested command directory to the immutable workspace-relative form
+    /// used by the selected native or container launcher.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested directory escapes the launch workspace.
+    pub fn workspace_relative_workdir(
+        &self,
+        input: &ExecCommandInput,
+    ) -> Result<std::path::PathBuf, ProcessError> {
+        self.inner.launcher.workspace_relative_workdir(input)
+    }
+
     /// Writes once to, or polls, an owner-scoped published session.
     ///
     /// # Errors
@@ -393,6 +428,33 @@ impl ProcessManager {
         let _guard = Arc::clone(&process.interaction).lock_owned().await;
         self.recheck(owner, session_id, &process)?;
         process.interrupt().await
+    }
+
+    /// Terminates and forgets one owner-scoped published session and its process tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns an unknown-session or shutdown error when authority no longer owns the session.
+    pub async fn terminate(&self, owner: &OwnerId, session_id: i32) -> Result<(), ProcessError> {
+        self.reap_expired();
+        let process = self.lookup(owner, session_id)?;
+        let _interaction = Arc::clone(&process.interaction).lock_owned().await;
+        self.recheck(owner, session_id, &process)?;
+        {
+            let mut registry = lock_registry(&self.inner);
+            let remove_slot = registry.slots.get(&session_id).is_some_and(|slot| {
+                &slot.owner == owner
+                    && matches!(&slot.phase, SlotPhase::Published(current) if Arc::ptr_eq(current, &process))
+            });
+            if remove_slot {
+                registry.slots.remove(&session_id);
+            } else {
+                registry.tombstones.remove(&session_id);
+            }
+        }
+        process.terminate().await;
+        self.inner.idle.notify_waiters();
+        Ok(())
     }
 
     #[must_use]
@@ -512,59 +574,7 @@ impl ProcessManager {
         &self,
         input: &ExecCommandInput,
     ) -> Result<std::process::Command, ProcessError> {
-        let cwd = input
-            .workdir
-            .as_deref()
-            .filter(|path| !path.is_empty())
-            .map_or_else(|| PathBuf::from("."), PathBuf::from);
-
-        let capabilities = self.inner.sandbox.capabilities();
-
-        #[cfg(windows)]
-        let (shell, args) = {
-            let shell = input
-                .shell
-                .clone()
-                .unwrap_or_else(|| "powershell.exe".to_owned());
-            let args = vec![
-                "-NoLogo".to_owned(),
-                "-Command".to_owned(),
-                input.cmd.clone(),
-            ];
-            (shell, args)
-        };
-        #[cfg(not(windows))]
-        let (shell, args) = {
-            let shell = input
-                .shell
-                .clone()
-                .or_else(|| std::env::var("SHELL").ok())
-                .unwrap_or_else(|| "/bin/sh".to_owned());
-            let dialect = shell_dialect(&shell)?;
-            let command = capabilities.as_ref().map_or_else(
-                || Ok(input.cmd.clone()),
-                |snapshot| {
-                    command_with_fixed_environment(dialect, snapshot.environment(), &input.cmd)
-                },
-            )?;
-            let mode = if input.login.unwrap_or(true) {
-                "-lc"
-            } else {
-                "-c"
-            };
-            (shell, vec![mode.to_owned(), command])
-        };
-        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
-        let mut command = self
-            .inner
-            .sandbox
-            .command(&shell, &args, &cwd)
-            .and_then(mcp_agent_authority::sandbox::SandboxCommand::into_std_command)
-            .map_err(ProcessError::spawn)?;
-        if let Some(capabilities) = capabilities {
-            command.envs(capabilities.environment());
-        }
-        Ok(command)
+        self.inner.launcher.build_command(input)
     }
 
     fn spawn_terminal_monitor(&self, session_id: i32, process: Arc<RunningProcess>) {
@@ -915,7 +925,11 @@ fn generate_chunk_id() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Registry, next_session_id};
+    use super::{ProcessManager, ProcessManagerConfig, Registry, next_session_id};
+    use crate::contracts::ExecCommandInput;
+    use crate::process::launcher::CommandLauncher;
+    use crate::process::{OwnerId, ProcessError};
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicI32, Ordering};
 
     #[test]
@@ -927,5 +941,54 @@ mod tests {
         assert_eq!(next_id.load(Ordering::Relaxed), 1_000);
         assert_eq!(next_session_id(&next_id, &registry), 1_000);
         assert_eq!(next_id.load(Ordering::Relaxed), 1_001);
+    }
+
+    #[cfg(not(windows))]
+    struct FakeLauncher;
+
+    #[cfg(not(windows))]
+    impl CommandLauncher for FakeLauncher {
+        fn build_command(
+            &self,
+            input: &ExecCommandInput,
+        ) -> Result<std::process::Command, ProcessError> {
+            let mut command = std::process::Command::new("/bin/sh");
+            command.args(["-c", &input.cmd]);
+            Ok(command)
+        }
+
+        fn workspace_relative_workdir(
+            &self,
+            input: &ExecCommandInput,
+        ) -> Result<std::path::PathBuf, ProcessError> {
+            Ok(input.workdir.as_deref().unwrap_or_default().into())
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn sealed_fake_launcher_exercises_the_same_process_lifecycle() {
+        let manager =
+            ProcessManager::with_launcher(Arc::new(FakeLauncher), ProcessManagerConfig::default());
+        let output = manager
+            .exec_command(
+                &OwnerId::from("fake-launcher-test"),
+                ExecCommandInput {
+                    cmd: "printf launcher-boundary".to_owned(),
+                    workdir: None,
+                    tty: false,
+                    yield_time_ms: 1_000,
+                    max_output_tokens: None,
+                    shell: None,
+                    login: None,
+                },
+            )
+            .await
+            .unwrap()
+            .handoff()
+            .await
+            .unwrap();
+        assert_eq!(output.output, "launcher-boundary");
+        manager.shutdown().await;
     }
 }

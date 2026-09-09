@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+fail() { printf 'STOP: %s\n' "$*" >&2; exit 1; }
+[ "$(id -u)" -eq 0 ] || fail "host prerequisites require root"
+ss -H -lnt | awk '{print $4}' | grep -Eq '(^|:)443$' || fail "Amnezia listener on 443 is missing"
+ss -H -lnt | awk '{print $4}' | grep -Eq '(^|:)22$' || fail "SSH listener is missing"
+ss -H -lnt | awk '{print $4}' | grep -Eq '(^|:)80$|(^|:)8444$' && fail "80 or 8444 is unexpectedly occupied"
+docker inspect amnezia-xray amnezia-awg amnezia-awg2 >/dev/null || fail "expected Amnezia containers are unavailable"
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get install -y podman uidmap slirp4netns fuse-overlayfs rustup rsync e2fsprogs haproxy jq curl sqlite3 openssl
+
+getent passwd tools-mcp-gateway >/dev/null || useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin tools-mcp-gateway
+getent passwd tools-mcp-edge >/dev/null || useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin tools-mcp-edge
+if ! getent passwd tools-mcp-workload >/dev/null; then
+  useradd --create-home --home-dir /var/lib/tools-mcp/workload --shell /usr/sbin/nologin tools-mcp-workload
+  passwd --lock tools-mcp-workload >/dev/null
+fi
+
+workload_uid=$(id -u tools-mcp-workload)
+grep -q '^tools-mcp-workload:' /etc/subuid || usermod --add-subuids 200000-265535 tools-mcp-workload
+grep -q '^tools-mcp-workload:' /etc/subgid || usermod --add-subgids 200000-265535 tools-mcp-workload
+loginctl enable-linger tools-mcp-workload
+install -d -m 0700 -o tools-mcp-workload -g tools-mcp-workload "/run/user/$workload_uid"
+
+systemctl is-active --quiet ssh || fail "SSH degraded during prerequisite installation"
+[ "$(docker inspect -f '{{.State.Running}}' amnezia-xray amnezia-awg amnezia-awg2 | sort -u)" = true ] || fail "Amnezia degraded during prerequisite installation"

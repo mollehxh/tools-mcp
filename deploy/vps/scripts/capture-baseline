@@ -1,0 +1,37 @@
+#!/bin/sh
+set -eu
+
+output=${1:?usage: capture-baseline OUTPUT_DIRECTORY}
+[ ! -e "$output" ] || { printf 'STOP: baseline output already exists\n' >&2; exit 1; }
+for command in docker jq sha256sum; do
+  command -v "$command" >/dev/null 2>&1 || {
+    printf 'STOP: baseline dependency is missing: %s\n' "$command" >&2
+    exit 1
+  }
+done
+mkdir -m 0700 "$output"
+ss -H -lntup > "$output/listeners.txt"
+ip -details route show table all > "$output/routes.txt"
+ip -details -6 route show table all > "$output/routes-v6.txt"
+nft list ruleset > "$output/nftables.txt" 2>/dev/null || true
+docker info > "$output/docker-info.txt"
+docker ps --no-trunc --format '{{json .}}' > "$output/docker-containers.jsonl"
+docker inspect amnezia-awg > "$output/amnezia-inspect.json" 2>/dev/null || \
+  docker ps --filter name=amnezia --quiet | xargs -r docker inspect > "$output/amnezia-inspect.json"
+{
+  docker version --format '{{.Server.Version}}'
+  if [ -f /etc/docker/daemon.json ]; then sha256sum /etc/docker/daemon.json; else printf 'daemon-config-absent\n'; fi
+} | sha256sum | awk '{ print $1 }' > "$output/docker-static.sha256"
+amnezia_ids=$(docker ps -a --filter name=amnezia --quiet)
+[ -n "$amnezia_ids" ] || { printf 'STOP: Amnezia container is missing\n' >&2; exit 1; }
+docker inspect $amnezia_ids | jq -cS \
+  'map({Id,Image,Name,Config,HostConfig,Mounts,Networks:.NetworkSettings.Networks})' |
+  sha256sum | awk '{ print $1 }' > "$output/amnezia-static.sha256"
+podman info > "$output/podman-info.txt" 2>/dev/null || true
+df -PT > "$output/filesystems.txt"
+df -Pi > "$output/inodes.txt"
+sysctl kernel.unprivileged_userns_clone > "$output/userns.txt"
+getent passwd tools-mcp-gateway tools-mcp-runner tools-mcp-workload > "$output/users.txt" 2>/dev/null || true
+cp /etc/subuid "$output/subuid.txt"
+cp /etc/subgid "$output/subgid.txt"
+find "$output" -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$output/SHA256SUMS"
