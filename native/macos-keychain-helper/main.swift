@@ -53,6 +53,8 @@ guard accessStatus == errSecSuccess, let access else {
 
 let privateAttributes: [CFString: Any] = [
     kSecAttrIsPermanent: true,
+    kSecAttrIsExtractable: false,
+    kSecAttrIsSensitive: true,
     kSecAttrLabel: label,
     kSecAttrAccess: access,
 ]
