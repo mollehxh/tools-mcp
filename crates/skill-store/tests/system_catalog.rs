@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 struct Fixture {
+    #[cfg_attr(windows, allow(dead_code))]
     root: tempfile::TempDir,
     authority: WorkspaceAuthority,
     system_skills: PathBuf,
