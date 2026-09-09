@@ -1,4 +1,5 @@
 use super::ProcessError;
+#[cfg(not(windows))]
 use super::manager::{command_with_fixed_environment, shell_dialect};
 use crate::contracts::ExecCommandInput;
 use mcp_agent_authority::sandbox::VerifiedSandbox;

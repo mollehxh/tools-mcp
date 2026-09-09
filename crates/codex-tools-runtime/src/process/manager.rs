@@ -8,8 +8,12 @@ use crate::contracts::{ExecCommandInput, ExecCommandOutput, WriteStdinInput};
 use crate::upstream_head_tail_buffer::HeadTailBuffer;
 use mcp_agent_authority::sandbox::VerifiedSandbox;
 use rand::Rng;
-use std::collections::{BTreeMap, HashMap};
+#[cfg(not(windows))]
+use std::collections::BTreeMap;
+use std::collections::HashMap;
+#[cfg(not(windows))]
 use std::ffi::{OsStr, OsString};
+#[cfg(not(windows))]
 use std::path::Path;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -925,10 +929,16 @@ fn generate_chunk_id() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProcessManager, ProcessManagerConfig, Registry, next_session_id};
+    #[cfg(not(windows))]
+    use super::{ProcessManager, ProcessManagerConfig};
+    use super::{Registry, next_session_id};
+    #[cfg(not(windows))]
     use crate::contracts::ExecCommandInput;
+    #[cfg(not(windows))]
     use crate::process::launcher::CommandLauncher;
+    #[cfg(not(windows))]
     use crate::process::{OwnerId, ProcessError};
+    #[cfg(not(windows))]
     use std::sync::Arc;
     use std::sync::atomic::{AtomicI32, Ordering};
 
