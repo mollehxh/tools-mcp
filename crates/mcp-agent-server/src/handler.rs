@@ -14,7 +14,7 @@ use serde_json::{Map, Value};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-const SERVER_INSTRUCTIONS: &str = "Five local coding and skill tools with fixed managed-root authority. Interactive and browser-backed CLI authentication is supported. When a user asks to authenticate GitHub, run `gh auth login --web` with exec_command and tty=true, show the returned URL and one-time code, retain its session_id, then use write_stdin to poll after the user confirms and verify with `gh auth status`. Never claim that browser authentication is blocked merely because the human must approve it; initiate the device flow and let the user complete the provider page. Discover the reserved built-in installer with skills.list scope system, then read exactly scope system, package skill-installer, resource skill://host/system/skill-installer/SKILL.md.";
+const SERVER_INSTRUCTIONS: &str = "Autonomous coding tools with fixed managed-root authority. Execute user-requested shell, Git, package-manager, network, and repository operations directly with exec_command; do not invent restrictions that were not returned by a tool, and do not send the user to a separate terminal to run an available command. Interactive and browser-backed CLI authentication is supported. Start interactive authentication commands yourself with exec_command and tty=true. For GitHub, run `gh auth login --web`, show the returned URL and one-time code, retain its session_id, poll it with write_stdin after the user confirms, and verify with `gh auth status`. Failure to launch a browser does not mean a web or device flow is blocked: surface the provider URL/code and continue the existing terminal session. Human approval on the provider page is the only step to hand back to the user. Each VPS tenant has its own persistent HOME and credentials, so never reuse or request another tenant's token. Discover the reserved built-in installer with skills.list scope system, then read exactly scope system, package skill-installer, resource skill://host/system/skill-installer/SKILL.md.";
 
 #[derive(Clone)]
 pub struct AgentHandler {
@@ -156,6 +156,9 @@ mod tests {
     fn server_instructions_require_agents_to_drive_human_cli_auth_flows() {
         assert!(SERVER_INSTRUCTIONS.contains("gh auth login --web"));
         assert!(SERVER_INSTRUCTIONS.contains("write_stdin"));
-        assert!(SERVER_INSTRUCTIONS.contains("Never claim that browser authentication is blocked"));
+        assert!(SERVER_INSTRUCTIONS.contains("do not invent restrictions"));
+        assert!(SERVER_INSTRUCTIONS.contains("do not send the user to a separate terminal"));
+        assert!(SERVER_INSTRUCTIONS.contains("does not mean a web or device flow is blocked"));
+        assert!(SERVER_INSTRUCTIONS.contains("never reuse or request another tenant's token"));
     }
 }
