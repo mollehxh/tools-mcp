@@ -380,7 +380,7 @@ fn status(value: i32) -> Result<(), String> {
     } else {
         Err(format!(
             "Windows CNG operation failed: 0x{:08x}",
-            value as u32
+            value.cast_unsigned()
         ))
     }
 }
