@@ -472,6 +472,7 @@ fn verify_mode(path: &Path, expected: u32) -> anyhow::Result<()> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 fn verify_mode(_path: &Path, _expected: u32) -> anyhow::Result<()> {
     Ok(())
 }

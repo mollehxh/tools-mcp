@@ -295,6 +295,7 @@ fn valid_device_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
+#[cfg_attr(not(unix), allow(unused_variables, clippy::unnecessary_wraps))]
 fn require_root_private_key(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {

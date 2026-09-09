@@ -391,6 +391,7 @@ pub(crate) fn set_executable(path: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 pub(crate) fn set_executable(_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
@@ -404,6 +405,7 @@ fn set_mode(path: &Path, mode: u32) -> anyhow::Result<()> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 fn set_mode(_path: &Path, _mode: u32) -> anyhow::Result<()> {
     Ok(())
 }

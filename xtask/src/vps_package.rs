@@ -575,6 +575,7 @@ fn file_mode(path: &Path) -> anyhow::Result<u32> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 fn file_mode(path: &Path) -> anyhow::Result<u32> {
     let executable = path
         .components()
@@ -591,6 +592,7 @@ fn set_mode(path: &Path, mode: u32) -> anyhow::Result<()> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 fn set_mode(_path: &Path, _mode: u32) -> anyhow::Result<()> {
     Ok(())
 }
